@@ -181,6 +181,12 @@ class ExecutionList(TopologicalSort):
     def is_cached(self, node_id):
         return self.output_cache.get(node_id) is not None
 
+    def length(self):
+        """
+        Returns the number of nodes in the execution list.
+        """
+        return len(self.pendingNodes)
+
     def stage_node_execution(self):
         assert self.staged_node_id is None
         if self.is_empty():
