@@ -18,6 +18,8 @@ from comfy_execution.graph_utils import is_link, GraphBuilder
 from comfy_execution.caching import HierarchicalCache, LRUCache, DependencyAwareCache, CacheKeySetInputSignature, CacheKeySetID
 from comfy_execution.validation import validate_node_input
 
+from saveProcess import saveProcess
+
 class ExecutionResult(Enum):
     SUCCESS = 0
     FAILURE = 1
@@ -527,6 +529,7 @@ class PromptExecutor:
                 print(f"Executing prompt {prompt_id}, {left_nodes} nodes left")
 
                 self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
+                saveProcess(prompt_id, (left_nodes *100) / total_nodes)
                 node_id, error, ex = execution_list.stage_node_execution()
                 if error is not None:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
@@ -549,6 +552,7 @@ class PromptExecutor:
             print(f"Execution finished for prompt {prompt_id}")
             
             self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
+            saveProcess(prompt_id, 100)
 
             ui_outputs = {}
             meta_outputs = {}
