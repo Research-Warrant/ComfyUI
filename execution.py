@@ -524,6 +524,9 @@ class PromptExecutor:
 
             total_nodes = len(cached_nodes) + execution_list.length()
             print(f"Executing prompt {prompt_id} with {total_nodes} Total Nodes to execute")
+
+            return_error = False
+
             while not execution_list.is_empty():
                 left_nodes = execution_list.length()
                 print(f"Executing prompt {prompt_id}, {left_nodes} nodes left")
@@ -539,6 +542,7 @@ class PromptExecutor:
                 self.success = result != ExecutionResult.FAILURE
                 if result == ExecutionResult.FAILURE:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
+                    return_error = error
                     break
                 elif result == ExecutionResult.PENDING:
                     execution_list.unstage_node_execution()
@@ -551,8 +555,12 @@ class PromptExecutor:
             left_nodes = execution_list.length()
             print(f"Execution finished for prompt {prompt_id}")
             
-            self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
-            saveProcess(prompt_id, 100)
+            if return_error is not False:
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "error": return_error })
+                saveProcess(prompt_id, 0, error=return_error)
+            else:
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
+                saveProcess(prompt_id, 100)
 
             ui_outputs = {}
             meta_outputs = {}
