@@ -12,6 +12,8 @@ import utils.extra_config
 import logging
 import sys
 
+from db import init_mongo_client
+
 if __name__ == "__main__":
     #NOTE: These do not do anything on core ComfyUI, they are for custom nodes.
     os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'
@@ -299,6 +301,8 @@ if __name__ == "__main__":
     # Running directly, just start ComfyUI.
     logging.info("Python version: {}".format(sys.version))
     logging.info("ComfyUI version: {}".format(comfyui_version.__version__))
+
+    init_mongo_client()
 
     event_loop, _, start_all_func = start_comfyui()
     try:
