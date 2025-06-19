@@ -646,7 +646,7 @@ class PromptServer():
                 prompt = json_data["prompt"]
                 valid = execution.validate_prompt(prompt)
                 extra_data = {}
-                workType = ''
+                workType = None
                 if "extra_data" in json_data:
                     extra_data = json_data["extra_data"]
 
