@@ -35,6 +35,7 @@ from app.model_manager import ModelFileManager
 from app.custom_node_manager import CustomNodeManager
 from typing import Optional, Union
 from api_server.routes.internal.internal_routes import InternalRoutes
+from saveProcess import saveProcess
 
 class BinaryEventTypes:
     PREVIEW_IMAGE = 1
@@ -645,8 +646,14 @@ class PromptServer():
                 prompt = json_data["prompt"]
                 valid = execution.validate_prompt(prompt)
                 extra_data = {}
+                workType = ''
                 if "extra_data" in json_data:
                     extra_data = json_data["extra_data"]
+
+                if "workType" in json_data:
+                    workType = json_data["workType"]
+
+                print(f"Received prompt: {prompt} with number: {number} and work_type: {workType}")
 
                 if "client_id" in json_data:
                     extra_data["client_id"] = json_data["client_id"]
@@ -654,6 +661,7 @@ class PromptServer():
                     prompt_id = str(uuid.uuid4())
                     outputs_to_execute = valid[2]
                     self.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute))
+                    saveProcess(prompt_id, prompt, error=None)
                     response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3]}
                     return web.json_response(response)
                 else:
