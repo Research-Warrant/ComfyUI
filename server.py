@@ -653,15 +653,13 @@ class PromptServer():
                 if "workType" in json_data:
                     workType = json_data["workType"]
 
-                print(f"Received prompt: {prompt} with number: {number} and work_type: {workType}")
-
                 if "client_id" in json_data:
                     extra_data["client_id"] = json_data["client_id"]
                 if valid[0]:
                     prompt_id = str(uuid.uuid4())
                     outputs_to_execute = valid[2]
                     self.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute))
-                    saveProcess(prompt_id, prompt, error=None)
+                    saveProcess(prompt_id, prompt, workType=workType)
                     response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3]}
                     return web.json_response(response)
                 else:
