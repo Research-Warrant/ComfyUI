@@ -2,7 +2,7 @@ from db import get_mongo_client
 from datetime import datetime
 import os
 
-def saveProcess(prompt_id, process, error=None, workType=None):
+def saveProcess(prompt_id, process, error=None, workType=None, server_name=None):
     try:
         print(f"[SaveProcess] Saving process for prompt ID: {prompt_id} with process: {process}")
         client = get_mongo_client()
@@ -15,6 +15,8 @@ def saveProcess(prompt_id, process, error=None, workType=None):
         }
         if workType:
             log_entry["workType"] = workType
+        if server_name: 
+            log_entry["server_name"] = server_name
         if error:
             log_entry["error"] = error        
 
