@@ -691,6 +691,8 @@ class PromptServer():
 
         @routes.post("/interrupt")
         async def post_interrupt(request):
+            print("Interrupting processing")
+            print(request)
             nodes.interrupt_processing()
             return web.Response(status=200)
 
