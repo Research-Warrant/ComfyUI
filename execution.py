@@ -532,7 +532,7 @@ class PromptExecutor:
                 print(f"Executing prompt {prompt_id}, {left_nodes} nodes left")
 
                 self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
-                saveProcess(prompt_id, 100 * (total_nodes - left_nodes) / total_nodes)
+                saveProcess(prompt_id, 100 * (total_nodes - left_nodes) / total_nodes, status="processing")
                 node_id, error, ex = execution_list.stage_node_execution()
                 if error is not None:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
@@ -557,10 +557,10 @@ class PromptExecutor:
             
             if return_error is not False:
                 self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "error": return_error })
-                saveProcess(prompt_id, 0, error=return_error)
+                saveProcess(prompt_id, 0, error=return_error, status="failed")
             else:
                 self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
-                saveProcess(prompt_id, 100)
+                saveProcess(prompt_id, 100, status="completed")
 
             ui_outputs = {}
             meta_outputs = {}
