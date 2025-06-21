@@ -531,7 +531,7 @@ class PromptExecutor:
                 left_nodes = execution_list.length()
                 print(f"Executing prompt {prompt_id}, {left_nodes} nodes left")
 
-                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "status": "processing" })
                 saveProcess(prompt_id, 100 * (total_nodes - left_nodes) / total_nodes, status="processing")
                 node_id, error, ex = execution_list.stage_node_execution()
                 if error is not None:
@@ -556,10 +556,10 @@ class PromptExecutor:
             print(f"Execution finished for prompt {prompt_id}")
             
             if return_error is not False:
-                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "error": return_error })
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "error": return_error, "status": "failed" })
                 saveProcess(prompt_id, 0, error=return_error, status="failed")
             else:
-                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "status": "completed" })
                 saveProcess(prompt_id, 100, status="completed")
 
             ui_outputs = {}

@@ -661,7 +661,7 @@ class PromptServer():
                     server_name = os.getenv("SERVER_NAME", "ComfyUI Server") 
                     self.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute))
                     saveProcess(prompt_id, 0, workType=workType, server_name=server_name, status="queued")
-                    response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3]}
+                    response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3], "server_name": server_name}
                     return web.json_response(response)
                 else:
                     logging.warning("invalid prompt: {}".format(valid[1]))
