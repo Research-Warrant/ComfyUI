@@ -646,21 +646,25 @@ class PromptServer():
                 prompt = json_data["prompt"]
                 valid = execution.validate_prompt(prompt)
                 extra_data = {}
-                workType = None
+                payload = {}
+                server_name = os.getenv("SERVER_NAME", "ComfyUI Server")
+                
                 if "extra_data" in json_data:
                     extra_data = json_data["extra_data"]
-
-                if "workType" in json_data:
-                    workType = json_data["workType"]
+                
+                if "payload" in json_data:
+                    payload = json_data["payload"]
+                payload["status"] = "queued"
+                payload["server_name"]  = server_name
 
                 if "client_id" in json_data:
                     extra_data["client_id"] = json_data["client_id"]
+
                 if valid[0]:
                     prompt_id = str(uuid.uuid4())
                     outputs_to_execute = valid[2]
-                    server_name = os.getenv("SERVER_NAME", "ComfyUI Server") 
                     self.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute))
-                    saveProcess(prompt_id, 0, workType=workType, server_name=server_name, status="queued")
+                    saveProcess(prompt_id, 0, payload=payload)
                     response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3], "server_name": server_name}
                     return web.json_response(response)
                 else:
