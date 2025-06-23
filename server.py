@@ -665,7 +665,7 @@ class PromptServer():
                     outputs_to_execute = valid[2]
                     self.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute))
                     saveProcess(prompt_id, 0, payload=payload)
-                    response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3], "server_name": server_name}
+                    response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3], "payload": payload}
                     return web.json_response(response)
                 else:
                     logging.warning("invalid prompt: {}".format(valid[1]))
