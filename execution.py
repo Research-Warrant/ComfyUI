@@ -1005,6 +1005,11 @@ class PromptQueue:
 
     def wipe_queue(self):
         with self.mutex:
+            # print self.queue contents for debugging
+            if len(self.queue) > 0:
+                print("Wiping queue, current items:")
+                for item in self.queue:
+                    print(item)
             self.queue = []
             self.server.queue_updated()
 
