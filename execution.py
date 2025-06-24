@@ -405,6 +405,7 @@ def execute(server, dynprompt, caches, current_item, extra_data, executed, promp
         # skip formatting inputs/outputs
         error_details = {
             "node_id": real_node_id,
+            "interrupted": True,
         }
 
         return (ExecutionResult.FAILURE, error_details, iex)
@@ -560,6 +561,7 @@ class PromptExecutor:
             
             payload = {}
             if return_error is not False:
+                print(f"Execution failed for prompt {prompt_id}, error: {len(return_error)}")
                 self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "error": return_error, "status": "failed" })
                 payload['status'] = "failed"
                 saveProcess(prompt_id, 0, error=return_error, payload=payload)
