@@ -1005,11 +1005,19 @@ class PromptQueue:
 
     def wipe_queue(self):
         with self.mutex:
-            # print self.queue contents for debugging
             if len(self.queue) > 0:
                 print("Wiping queue, current items:")
                 for item in self.queue:
-                    print(item)
+                    prompt_id = item[1]
+                    self.server.send_sync("process", {
+                        "prompt_id": prompt_id,
+                        "left_nodes": 0,
+                        "total_nodes": 0,
+                        "error": 'Canceled',
+                        "status": "canceled"
+                    })
+                    
+                    saveProcess(prompt_id, 0, payload={"status": "canceled"})
             self.queue = []
             self.server.queue_updated()
 

@@ -684,7 +684,6 @@ class PromptServer():
             json_data =  await request.json()
             if "clear" in json_data:
                 if json_data["clear"]:
-                    print("Clearing queue")
                     self.prompt_queue.wipe_queue()
             if "delete" in json_data:
                 to_delete = json_data['delete']
