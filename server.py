@@ -684,11 +684,16 @@ class PromptServer():
             json_data =  await request.json()
             if "clear" in json_data:
                 if json_data["clear"]:
+                    print("Clearing queue")
+                    print(self.prompt_queue)
+                    print(self.queue)
                     self.prompt_queue.wipe_queue()
             if "delete" in json_data:
                 to_delete = json_data['delete']
                 for id_to_delete in to_delete:
                     delete_func = lambda a: a[1] == id_to_delete
+                    self.server.send_sync("process", { "prompt_id": id_to_delete, "left_nodes": 0, "total_nodes": 0, "error": 'Canceled', "status": "failed" })
+                    saveProcess(id_to_delete, 0, payload={"status": "canceled"})
                     self.prompt_queue.delete_queue_item(delete_func)
 
             return web.Response(status=200)
