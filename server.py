@@ -646,21 +646,26 @@ class PromptServer():
                 prompt = json_data["prompt"]
                 valid = execution.validate_prompt(prompt)
                 extra_data = {}
-                workType = None
+                payload = {}
+                server_name = os.getenv("SERVER_NAME", "ComfyUI Server")
+                
                 if "extra_data" in json_data:
                     extra_data = json_data["extra_data"]
-
-                if "workType" in json_data:
-                    workType = json_data["workType"]
+                
+                if "payload" in json_data:
+                    payload = json_data["payload"]
+                payload["status"] = "queued"
+                payload["server_name"]  = server_name
 
                 if "client_id" in json_data:
                     extra_data["client_id"] = json_data["client_id"]
+
                 if valid[0]:
                     prompt_id = str(uuid.uuid4())
                     outputs_to_execute = valid[2]
                     self.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute))
-                    saveProcess(prompt_id, 0, workType=workType)
-                    response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3]}
+                    saveProcess(prompt_id, 0, payload=payload)
+                    response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3], "payload": payload}
                     return web.json_response(response)
                 else:
                     logging.warning("invalid prompt: {}".format(valid[1]))
@@ -684,6 +689,8 @@ class PromptServer():
                 to_delete = json_data['delete']
                 for id_to_delete in to_delete:
                     delete_func = lambda a: a[1] == id_to_delete
+                    self.send_sync("process", { "prompt_id": id_to_delete, "left_nodes": 0, "total_nodes": 0, "error": 'Canceled', "status": "canceled" })
+                    saveProcess(id_to_delete, 0, payload={"status": "canceled"})
                     self.prompt_queue.delete_queue_item(delete_func)
 
             return web.Response(status=200)

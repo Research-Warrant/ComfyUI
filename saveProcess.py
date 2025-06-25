@@ -2,7 +2,7 @@ from db import get_mongo_client
 from datetime import datetime
 import os
 
-def saveProcess(prompt_id, process, error=None, workType=None):
+def saveProcess(prompt_id, process, error=None, payload=None):
     try:
         print(f"[SaveProcess] Saving process for prompt ID: {prompt_id} with process: {process}")
         client = get_mongo_client()
@@ -13,11 +13,12 @@ def saveProcess(prompt_id, process, error=None, workType=None):
             "created_on": datetime.utcnow().isoformat(),
             "process": process,
         }
-        if workType:
-            log_entry["workType"] = workType
-        if error:
-            log_entry["error"] = error        
 
+        if error:
+            log_entry["error"] = error
+        if payload:
+            for key, value in payload.items():
+                log_entry[key] = value
         result = collection.update_one(
             {"hash": prompt_id},
             {"$set": log_entry},
