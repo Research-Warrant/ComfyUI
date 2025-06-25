@@ -1017,7 +1017,6 @@ class PromptQueue:
     def wipe_queue(self):
         with self.mutex:
             if len(self.queue) > 0:
-                print("Wiping queue, current items:")
                 for item in self.queue:
                     prompt_id = item[1]
                     self.server.send_sync("process", {
