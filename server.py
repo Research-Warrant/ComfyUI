@@ -666,7 +666,7 @@ class PromptServer():
                     if node_data.get("class_type") == "VideoData":
                         workflow_id = node_data.get("inputs", {}).get("workflowId")
                         break
-                print(f"Extracted workflow_id: {workflow_id}")
+                
                 if workflow_id:
                     payload["workflowId"] = workflow_id
 
