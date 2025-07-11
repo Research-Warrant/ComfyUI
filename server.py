@@ -657,8 +657,19 @@ class PromptServer():
                 payload["status"] = "queued"
                 payload["server_name"]  = server_name
 
+                # Extract workflowId from VideoData node
+                workflow_id = None
+                for node_id, node_data in prompt.items():
+                    if node_data.get("class_type") == "VideoData":
+                        workflow_id = node_data.get("inputs", {}).get("workflowId")
+                        break
+                print(f"Extracted workflow_id: {workflow_id}")
+                if workflow_id:
+                    payload["workflowId"] = workflow_id
+
                 if "client_id" in json_data:
                     extra_data["client_id"] = json_data["client_id"]
+                
 
                 if valid[0]:
                     prompt_id = str(uuid.uuid4())
