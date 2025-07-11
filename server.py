@@ -36,6 +36,7 @@ from app.custom_node_manager import CustomNodeManager
 from typing import Optional, Union
 from api_server.routes.internal.internal_routes import InternalRoutes
 from saveProcess import saveProcess
+from datetime import datetime
 
 class BinaryEventTypes:
     PREVIEW_IMAGE = 1
@@ -648,6 +649,7 @@ class PromptServer():
                 extra_data = {}
                 payload = {}
                 server_name = os.getenv("SERVER_NAME", "ComfyUI Server")
+                created_on = datetime.utcnow().isoformat()
                 
                 if "extra_data" in json_data:
                     extra_data = json_data["extra_data"]
@@ -656,6 +658,7 @@ class PromptServer():
                     payload = json_data["payload"]
                 payload["status"] = "queued"
                 payload["server_name"]  = server_name
+                payload["created_on"] = created_on
 
                 # Extract workflowId from VideoData node
                 workflow_id = None

@@ -1,5 +1,4 @@
 from db import get_mongo_client
-from datetime import datetime
 import os
 
 def saveProcess(prompt_id, process, error=None, payload=None):
@@ -10,7 +9,6 @@ def saveProcess(prompt_id, process, error=None, payload=None):
         collection = db["auditlogs"]
 
         log_entry = {
-            "created_on": datetime.utcnow().isoformat(),
             "process": process,
         }
 
