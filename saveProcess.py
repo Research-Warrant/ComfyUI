@@ -10,7 +10,7 @@ def saveProcess(prompt_id, process, error=None, payload=None):
         collection = db["auditlogs"]
 
         log_entry = {
-            "created_on": datetime.utcnow().isoformat(),
+            "updated_on": datetime.utcnow().isoformat(),
             "process": process,
         }
 
