@@ -149,6 +149,49 @@ def create_origin_only_middleware():
 
     return origin_only_middleware
 
+def transform_framepack_to_api(genai: dict) -> dict:
+    # 1. Build link map
+    link_map = {link[0]: (link[1], link[2]) for link in genai.get("links", [])}
+    api_spec = {}
+
+    # 2. Iterate nodes
+    for node in genai.get("nodes", []):
+        nid = str(node["id"])
+        class_type = node["type"]
+        # meta title
+        title = node.get("title") or node.get("properties", {}) \
+                    .get("Node name for S&R", class_type)
+
+        inputs = {}
+        # 3a. map linked inputs
+        for inp in node.get("inputs", []):
+            link_id = inp.get("link")
+            if link_id is not None and link_id in link_map:
+                src_node, src_idx = link_map[link_id]
+                inputs[inp["name"]] = [str(src_node), src_idx]
+
+        # 3b. map widget values
+        wv = node.get("widgets_values")
+        if isinstance(wv, dict):
+            inputs.update(wv)
+        elif isinstance(wv, list):
+            # pick out the inputs that have a widget and no link
+            param_names = [
+                inp["name"]
+                for inp in node.get("inputs", [])
+                if inp.get("widget") and inp.get("link") is None
+            ]
+            for i, val in enumerate(wv):
+                if i < len(param_names) and param_names[i] not in inputs:
+                    inputs[param_names[i]] = val
+
+        api_spec[nid] = {
+            "inputs": inputs,
+            "class_type": class_type,
+            "_meta": {"title": title}
+        }
+
+    return api_spec
 class PromptServer():
     def __init__(self, loop):
         PromptServer.instance = self
@@ -737,6 +780,24 @@ class PromptServer():
                     self.prompt_queue.delete_history_item(id_to_delete)
 
             return web.Response(status=200)
+        @routes.post("/transform")
+        async def transform_workflow(request: web.Request):
+            """
+            POST /transform
+            Body:   the raw FramePack JSON (RW_FRAMEPACK_V1_GENAI)
+            Returns: the transformed API JSON (RW_FRAMEPACK_V1_GENAI_API)
+            """
+            try:
+                data = await request.json()
+                result = transform_framepack_to_api(data)
+                return web.json_response(result)
+            except Exception as e:
+                logging.exception("Failed to transform workflow")
+                return web.json_response(
+                    {"error": "transformation failed", "details": str(e)},
+                    status=500
+                )
+
 
     async def setup(self):
         timeout = aiohttp.ClientTimeout(total=None) # no timeout
