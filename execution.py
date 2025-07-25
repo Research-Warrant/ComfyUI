@@ -574,6 +574,10 @@ class PromptExecutor:
                     )
                     payload["status"] = "failed"
                     saveProcess(prompt_id, 0, error=return_error, payload=payload)
+                else: 
+                    self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "status": "canceled" })
+                    payload['status'] = "canceled"
+                    saveProcess(prompt_id, 0, payload=payload)
             else:
                 self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "status": "completed" })
                 payload['status'] = "completed"
