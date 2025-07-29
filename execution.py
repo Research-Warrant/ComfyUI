@@ -34,6 +34,8 @@ from comfy_execution.progress import get_progress_state, reset_progress_state, a
 from comfy_execution.utils import CurrentNodeContext
 
 
+from saveProcess import saveProcess
+
 class ExecutionResult(Enum):
     SUCCESS = 0
     FAILURE = 1
@@ -606,6 +608,8 @@ class PromptExecutor:
                 if self.caches.outputs.get(node_id) is not None:
                     cached_nodes.append(node_id)
 
+            print(f"Cached nodes: {len(cached_nodes)}")
+
             comfy.model_management.cleanup_models_gc()
             self.add_message("execution_cached",
                           { "nodes": cached_nodes, "prompt_id": prompt_id},
@@ -618,7 +622,17 @@ class PromptExecutor:
             for node_id in list(execute_outputs):
                 execution_list.add_node(node_id)
 
+            total_nodes = len(cached_nodes) + execution_list.length()
+            print(f"Executing prompt {prompt_id} with {total_nodes} Total Nodes to execute")
+
+            return_error = False
+
             while not execution_list.is_empty():
+                left_nodes = execution_list.length()
+                print(f"Executing prompt {prompt_id}, {left_nodes} nodes left")
+
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
+                saveProcess(prompt_id, 100 * (total_nodes - left_nodes) / total_nodes)
                 node_id, error, ex = await execution_list.stage_node_execution()
                 if error is not None:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
@@ -629,6 +643,7 @@ class PromptExecutor:
                 self.success = result != ExecutionResult.FAILURE
                 if result == ExecutionResult.FAILURE:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
+                    return_error = error
                     break
                 elif result == ExecutionResult.PENDING:
                     execution_list.unstage_node_execution()
@@ -637,6 +652,16 @@ class PromptExecutor:
             else:
                 # Only execute when the while-loop ends without break
                 self.add_message("execution_success", { "prompt_id": prompt_id }, broadcast=False)
+
+            left_nodes = execution_list.length()
+            print(f"Execution finished for prompt {prompt_id}")
+            
+            if return_error is not False:
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "error": return_error })
+                saveProcess(prompt_id, 0, error=return_error)
+            else:
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
+                saveProcess(prompt_id, 100)
 
             ui_outputs = {}
             meta_outputs = {}
