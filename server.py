@@ -42,11 +42,6 @@ from protocol import BinaryEventTypes
 from saveProcess import saveProcess
 from datetime import datetime
 
-class BinaryEventTypes:
-    PREVIEW_IMAGE = 1
-    UNENCODED_PREVIEW_IMAGE = 2
-    TEXT = 3
-
 async def send_socket_catch_exception(function, message):
     try:
         await function(message)
@@ -695,10 +690,10 @@ class PromptServer():
                 payload = {}
                 server_name = os.getenv("SERVER_NAME", "ComfyUI Server")
                 created_on = datetime.utcnow().isoformat()
-                
+
                 if "extra_data" in json_data:
                     extra_data = json_data["extra_data"]
-                
+
                 if "payload" in json_data:
                     payload = json_data["payload"]
                 payload["status"] = "queued"
@@ -711,13 +706,13 @@ class PromptServer():
                     if node_data.get("class_type") == "VideoData":
                         workflow_id = node_data.get("inputs", {}).get("workflowId")
                         break
-                
+
                 if workflow_id:
                     payload["workflowId"] = workflow_id
 
                 if "client_id" in json_data:
                     extra_data["client_id"] = json_data["client_id"]
-                
+
 
                 if valid[0]:
                     outputs_to_execute = valid[2]

@@ -629,7 +629,6 @@ class PromptExecutor:
             while not execution_list.is_empty():
                 left_nodes = execution_list.length()
 
-                print(f"Executing prompt {prompt_id}, {left_nodes} nodes left")
                 payload = {
                     "status": "processing",
                 }
@@ -673,7 +672,7 @@ class PromptExecutor:
                     )
                     payload["status"] = "failed"
                     saveProcess(prompt_id, 0, error=return_error, payload=payload)
-                else: 
+                else:
                     self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "status": "canceled" })
                     payload['status'] = "canceled"
                     saveProcess(prompt_id, 0, payload=payload)
@@ -1135,7 +1134,7 @@ class PromptQueue:
                         "error": 'Canceled',
                         "status": "canceled"
                     })
-                    
+
                     saveProcess(prompt_id, 0, payload={"status": "canceled"})
             self.queue = []
             self.server.queue_updated()
