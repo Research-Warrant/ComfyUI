@@ -990,7 +990,10 @@ class PromptServer():
                     }, status=400)
                 
                 # Get workflows directory
-                workflow_dir = os.path.join(folder_paths.get_output_directory(), "workflows")
+                user_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "user")
+                workflow_dir = os.path.join(user_dir, "default", "workflows")
+                
+                # Ensure the path is secure and within the workflows directory
                 file_path = os.path.join(workflow_dir, filename.replace('/', os.sep))
                 
                 # Ensure the path is secure and within the workflows directory
