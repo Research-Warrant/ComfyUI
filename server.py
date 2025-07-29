@@ -37,6 +37,9 @@ from typing import Optional, Union
 from api_server.routes.internal.internal_routes import InternalRoutes
 from saveProcess import saveProcess
 from datetime import datetime
+from workflow_converter import convert_workflow_to_api
+import glob
+import os
 
 class BinaryEventTypes:
     PREVIEW_IMAGE = 1
@@ -798,6 +801,254 @@ class PromptServer():
                     status=500
                 )
 
+
+        @routes.post("/workflow/convert")
+        async def convert_workflow(request):
+            """Convert ComfyUI workflow JSON to API format"""
+            try:
+                data = await request.json()
+                if not data or "workflow" not in data:
+                    return web.json_response({
+                        "status": "error",
+                        "message": "workflow field is required"
+                    }, status=400)
+                
+                workflow_data = data["workflow"]
+                options = data.get("options", {})
+                
+                # Convert workflow to API format
+                api_workflow = convert_workflow_to_api(workflow_data, options)
+                
+                return web.json_response({
+                    "status": "success",
+                    "message": "Workflow converted successfully",
+                    "data": api_workflow
+                })
+                
+            except ValueError as e:
+                return web.json_response({
+                    "status": "error",
+                    "message": str(e)
+                }, status=400)
+            except Exception as e:
+                logging.error(f"Error converting workflow: {e}")
+                return web.json_response({
+                    "status": "error",
+                    "message": "Internal server error",
+                    "details": str(e)
+                }, status=500)
+
+        @routes.get("/workflow/list")
+        async def list_workflows(request):
+            """List all available workflows from the userdata/workflows directory"""
+            try:
+                # Get workflows directory
+                workflow_dir = os.path.join(folder_paths.get_output_directory(), "workflows")
+                
+                # Create directory if not exists
+                os.makedirs(workflow_dir, exist_ok=True)
+                
+                # Get all json files recursively
+                pattern = os.path.join(glob.escape(workflow_dir), '**', '*.json')
+                workflow_files = []
+                
+                for file_path in glob.glob(pattern, recursive=True):
+                    workflow_files.append({
+                        "filename": os.path.relpath(file_path, workflow_dir).replace(os.sep, '/'),
+                        "size": os.path.getsize(file_path),
+                        "modified": os.path.getmtime(file_path)
+                    })
+                
+                return web.json_response({
+                    "status": "success",
+                    "workflows": workflow_files
+                })
+
+            except Exception as e:
+                logging.error(f"Error listing workflows: {e}")
+                return web.json_response({
+                    "status": "error",
+                    "message": "Internal server error",
+                    "details": str(e)
+                }, status=500)
+
+        @routes.get("/workflow/get")
+        async def get_workflow(request):
+            """Get a workflow by filename"""
+            try:
+                # Get filename from query parameters
+                filename = request.query.get("filename")
+                if not filename:
+                    return web.json_response({
+                        "status": "error",
+                        "message": "filename query parameter is required"
+                    }, status=400)
+                
+                # Get workflows directory
+                workflow_dir = os.path.join(folder_paths.get_output_directory(), "workflows")
+                file_path = os.path.join(workflow_dir, filename.replace('/', os.sep))
+                
+                # Ensure the path is secure and within the workflows directory
+                if not os.path.normpath(file_path).startswith(os.path.normpath(workflow_dir)):
+                    return web.json_response({
+                        "status": "error",
+                        "message": "Invalid filename path"
+                    }, status=400)
+                
+                # Check if file exists
+                if not os.path.isfile(file_path):
+                    return web.json_response({
+                        "status": "error",
+                        "message": f"Workflow file not found: {filename}"
+                    }, status=404)
+                
+                # Read workflow file
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    workflow_content = f.read()
+                
+                # Parse workflow JSON
+                try:
+                    workflow_data = json.loads(workflow_content)
+                except json.JSONDecodeError:
+                    return web.json_response({
+                        "status": "error",
+                        "message": "Invalid JSON in workflow file"
+                    }, status=400)
+                
+                return web.json_response({
+                    "status": "success",
+                    "filename": filename,
+                    "data": workflow_data
+                })
+
+            except Exception as e:
+                logging.error(f"Error getting workflow: {e}")
+                return web.json_response({
+                    "status": "error",
+                    "message": "Internal server error",
+                    "details": str(e)
+                }, status=500)
+
+        @routes.post("/workflow/save")
+        async def save_workflow(request):
+            """Save workflow to the userdata/workflows directory"""
+            try:
+                data = await request.json()
+                if not data or "workflow" not in data:
+                    return web.json_response({
+                        "status": "error",
+                        "message": "workflow field is required"
+                    }, status=400)
+                
+                workflow_data = data["workflow"]
+                filename = data.get("filename", "workflow.json")
+                
+                # Ensure filename has .json extension
+                if not filename.endswith('.json'):
+                    filename += '.json'
+                
+                # Get workflows directory
+                workflow_dir = os.path.join(folder_paths.get_output_directory(), "workflows")
+                os.makedirs(workflow_dir, exist_ok=True)
+                
+                # Ensure the path is secure
+                file_path = os.path.join(workflow_dir, filename.replace('/', os.sep))
+                if not os.path.normpath(file_path).startswith(os.path.normpath(workflow_dir)):
+                    return web.json_response({
+                        "status": "error",
+                        "message": "Invalid filename path"
+                    }, status=400)
+                
+                # Save workflow file
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(workflow_data, f, indent=2)
+                
+                return web.json_response({
+                    "status": "success",
+                    "message": "Workflow saved successfully",
+                    "filename": filename
+                })
+
+            except Exception as e:
+                logging.error(f"Error saving workflow: {e}")
+                return web.json_response({
+                    "status": "error",
+                    "message": "Internal server error",
+                    "details": str(e)
+                }, status=500)
+
+        @routes.get("/workflow/get-and-convert")
+        async def get_and_convert_workflow(request):
+            """Get a workflow by filename and convert it to API format"""
+            try:
+                # Get filename from query parameters
+                filename = request.query.get("filename")
+                if not filename:
+                    return web.json_response({
+                        "status": "error",
+                        "message": "filename query parameter is required"
+                    }, status=400)
+                
+                # Get workflows directory
+                workflow_dir = os.path.join(folder_paths.get_output_directory(), "workflows")
+                file_path = os.path.join(workflow_dir, filename.replace('/', os.sep))
+                
+                # Ensure the path is secure and within the workflows directory
+                if not os.path.normpath(file_path).startswith(os.path.normpath(workflow_dir)):
+                    return web.json_response({
+                        "status": "error",
+                        "message": "Invalid filename path"
+                    }, status=400)
+                
+                # Check if file exists
+                if not os.path.isfile(file_path):
+                    return web.json_response({
+                        "status": "error",
+                        "message": f"Workflow file not found: {filename}"
+                    }, status=404)
+                
+                # Read workflow file
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    workflow_content = f.read()
+                
+                # Parse workflow JSON
+                try:
+                    workflow_data = json.loads(workflow_content)
+                except json.JSONDecodeError:
+                    return web.json_response({
+                        "status": "error",
+                        "message": "Invalid JSON in workflow file"
+                    }, status=400)
+                
+                if not workflow_data:
+                    return web.json_response({
+                        "status": "error",
+                        "message": "Workflow file contains no data or is an empty JSON object"
+                    }, status=400)
+                
+                # Convert workflow to API format
+                options = {}
+                api_workflow = convert_workflow_to_api(workflow_data, options)
+                
+                return web.json_response({
+                    "status": "success",
+                    "message": "Workflow converted successfully",
+                    "filename": filename,
+                    "data": api_workflow
+                })
+
+            except ValueError as e:
+                return web.json_response({
+                    "status": "error",
+                    "message": str(e)
+                }, status=400)
+            except Exception as e:
+                logging.error(f"Error processing workflow: {e}")
+                return web.json_response({
+                    "status": "error",
+                    "message": "Internal server error",
+                    "details": str(e)
+                }, status=500)
 
     async def setup(self):
         timeout = aiohttp.ClientTimeout(total=None) # no timeout
