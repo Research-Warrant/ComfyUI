@@ -14,7 +14,7 @@ def saveProcess(prompt_id, process, error=None):
             "process": process,
         }
         if error:
-            log_entry["error"] = error        
+            log_entry["error"] = error
 
         result = collection.update_one(
             {"hash": prompt_id},

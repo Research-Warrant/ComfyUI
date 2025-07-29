@@ -655,7 +655,7 @@ class PromptExecutor:
 
             left_nodes = execution_list.length()
             print(f"Execution finished for prompt {prompt_id}")
-            
+
             if return_error is not False:
                 self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "error": return_error })
                 saveProcess(prompt_id, 0, error=return_error)
