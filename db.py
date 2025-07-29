@@ -14,7 +14,6 @@ def init_mongo_client():
             username=os.getenv("DATABASE_USER"),
             password=os.getenv("DATABASE_PASS")
         )
-        print("✅ MongoDB client initialized")
     return mongo_client
 
 def get_mongo_client():
