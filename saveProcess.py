@@ -4,7 +4,6 @@ import os
 
 def saveProcess(prompt_id, process, error=None):
     try:
-        print(f"[SaveProcess] Saving process for prompt ID: {prompt_id} with process: {process}")
         client = get_mongo_client()
         db = client[os.getenv("DATABASE_NAME")]
         collection = db["auditlogs"]
@@ -23,9 +22,9 @@ def saveProcess(prompt_id, process, error=None):
         )
 
         if result.matched_count > 0:
-            print("Log updated successfully.")
+            pass
         else:
-            print("New log entry created.")
+            pass
 
-    except Exception as e:
-        print(f"[SaveProcess] Error inserting log: {e}")
+    except Exception:
+        pass

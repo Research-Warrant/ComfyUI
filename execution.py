@@ -608,7 +608,6 @@ class PromptExecutor:
                 if self.caches.outputs.get(node_id) is not None:
                     cached_nodes.append(node_id)
 
-            print(f"Cached nodes: {len(cached_nodes)}")
 
             comfy.model_management.cleanup_models_gc()
             self.add_message("execution_cached",
@@ -623,13 +622,11 @@ class PromptExecutor:
                 execution_list.add_node(node_id)
 
             total_nodes = len(cached_nodes) + execution_list.length()
-            print(f"Executing prompt {prompt_id} with {total_nodes} Total Nodes to execute")
 
             return_error = False
 
             while not execution_list.is_empty():
                 left_nodes = execution_list.length()
-                print(f"Executing prompt {prompt_id}, {left_nodes} nodes left")
 
                 self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes })
                 saveProcess(prompt_id, 100 * (total_nodes - left_nodes) / total_nodes)
@@ -654,7 +651,6 @@ class PromptExecutor:
                 self.add_message("execution_success", { "prompt_id": prompt_id }, broadcast=False)
 
             left_nodes = execution_list.length()
-            print(f"Execution finished for prompt {prompt_id}")
 
             if return_error is not False:
                 self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "error": return_error })
