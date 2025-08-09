@@ -37,9 +37,6 @@ from typing import Optional, Union
 from api_server.routes.internal.internal_routes import InternalRoutes
 from saveProcess import saveProcess
 from datetime import datetime
-from workflow_converter import convert_workflow_to_api
-import glob
-import os
 
 class BinaryEventTypes:
     PREVIEW_IMAGE = 1
@@ -152,49 +149,7 @@ def create_origin_only_middleware():
 
     return origin_only_middleware
 
-def transform_framepack_to_api(genai: dict) -> dict:
-    # 1. Build link map
-    link_map = {link[0]: (link[1], link[2]) for link in genai.get("links", [])}
-    api_spec = {}
 
-    # 2. Iterate nodes
-    for node in genai.get("nodes", []):
-        nid = str(node["id"])
-        class_type = node["type"]
-        # meta title
-        title = node.get("title") or node.get("properties", {}) \
-                    .get("Node name for S&R", class_type)
-
-        inputs = {}
-        # 3a. map linked inputs
-        for inp in node.get("inputs", []):
-            link_id = inp.get("link")
-            if link_id is not None and link_id in link_map:
-                src_node, src_idx = link_map[link_id]
-                inputs[inp["name"]] = [str(src_node), src_idx]
-
-        # 3b. map widget values
-        wv = node.get("widgets_values")
-        if isinstance(wv, dict):
-            inputs.update(wv)
-        elif isinstance(wv, list):
-            # pick out the inputs that have a widget and no link
-            param_names = [
-                inp["name"]
-                for inp in node.get("inputs", [])
-                if inp.get("widget") and inp.get("link") is None
-            ]
-            for i, val in enumerate(wv):
-                if i < len(param_names) and param_names[i] not in inputs:
-                    inputs[param_names[i]] = val
-
-        api_spec[nid] = {
-            "inputs": inputs,
-            "class_type": class_type,
-            "_meta": {"title": title}
-        }
-
-    return api_spec
 class PromptServer():
     def __init__(self, loop):
         PromptServer.instance = self
@@ -783,276 +738,6 @@ class PromptServer():
                     self.prompt_queue.delete_history_item(id_to_delete)
 
             return web.Response(status=200)
-        @routes.post("/transform")
-        async def transform_workflow(request: web.Request):
-            """
-            POST /transform
-            Body:   the raw FramePack JSON (RW_FRAMEPACK_V1_GENAI)
-            Returns: the transformed API JSON (RW_FRAMEPACK_V1_GENAI_API)
-            """
-            try:
-                data = await request.json()
-                result = transform_framepack_to_api(data)
-                return web.json_response(result)
-            except Exception as e:
-                logging.exception("Failed to transform workflow")
-                return web.json_response(
-                    {"error": "transformation failed", "details": str(e)},
-                    status=500
-                )
-
-
-        @routes.post("/workflow/convert")
-        async def convert_workflow(request):
-            """Convert ComfyUI workflow JSON to API format"""
-            try:
-                data = await request.json()
-                if not data or "workflow" not in data:
-                    return web.json_response({
-                        "status": "error",
-                        "message": "workflow field is required"
-                    }, status=400)
-                
-                workflow_data = data["workflow"]
-                options = data.get("options", {})
-                
-                # Convert workflow to API format
-                api_workflow = convert_workflow_to_api(workflow_data, options)
-                
-                return web.json_response({
-                    "status": "success",
-                    "message": "Workflow converted successfully",
-                    "data": api_workflow
-                })
-                
-            except ValueError as e:
-                return web.json_response({
-                    "status": "error",
-                    "message": str(e)
-                }, status=400)
-            except Exception as e:
-                logging.error(f"Error converting workflow: {e}")
-                return web.json_response({
-                    "status": "error",
-                    "message": "Internal server error",
-                    "details": str(e)
-                }, status=500)
-
-        @routes.get("/workflow/list")
-        async def list_workflows(request):
-            """List all available workflows from the userdata/workflows directory"""
-            try:
-                # Get workflows directory
-                workflow_dir = os.path.join(folder_paths.get_output_directory(), "workflows")
-                
-                # Create directory if not exists
-                os.makedirs(workflow_dir, exist_ok=True)
-                
-                # Get all json files recursively
-                pattern = os.path.join(glob.escape(workflow_dir), '**', '*.json')
-                workflow_files = []
-                
-                for file_path in glob.glob(pattern, recursive=True):
-                    workflow_files.append({
-                        "filename": os.path.relpath(file_path, workflow_dir).replace(os.sep, '/'),
-                        "size": os.path.getsize(file_path),
-                        "modified": os.path.getmtime(file_path)
-                    })
-                
-                return web.json_response({
-                    "status": "success",
-                    "workflows": workflow_files
-                })
-
-            except Exception as e:
-                logging.error(f"Error listing workflows: {e}")
-                return web.json_response({
-                    "status": "error",
-                    "message": "Internal server error",
-                    "details": str(e)
-                }, status=500)
-
-        @routes.get("/workflow/get")
-        async def get_workflow(request):
-            """Get a workflow by filename"""
-            try:
-                # Get filename from query parameters
-                filename = request.query.get("filename")
-                if not filename:
-                    return web.json_response({
-                        "status": "error",
-                        "message": "filename query parameter is required"
-                    }, status=400)
-                
-                # Get workflows directory
-                workflow_dir = os.path.join(folder_paths.get_output_directory(), "workflows")
-                file_path = os.path.join(workflow_dir, filename.replace('/', os.sep))
-                
-                # Ensure the path is secure and within the workflows directory
-                if not os.path.normpath(file_path).startswith(os.path.normpath(workflow_dir)):
-                    return web.json_response({
-                        "status": "error",
-                        "message": "Invalid filename path"
-                    }, status=400)
-                
-                # Check if file exists
-                if not os.path.isfile(file_path):
-                    return web.json_response({
-                        "status": "error",
-                        "message": f"Workflow file not found: {filename}"
-                    }, status=404)
-                
-                # Read workflow file
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    workflow_content = f.read()
-                
-                # Parse workflow JSON
-                try:
-                    workflow_data = json.loads(workflow_content)
-                except json.JSONDecodeError:
-                    return web.json_response({
-                        "status": "error",
-                        "message": "Invalid JSON in workflow file"
-                    }, status=400)
-                
-                return web.json_response({
-                    "status": "success",
-                    "filename": filename,
-                    "data": workflow_data
-                })
-
-            except Exception as e:
-                logging.error(f"Error getting workflow: {e}")
-                return web.json_response({
-                    "status": "error",
-                    "message": "Internal server error",
-                    "details": str(e)
-                }, status=500)
-
-        @routes.post("/workflow/save")
-        async def save_workflow(request):
-            """Save workflow to the userdata/workflows directory"""
-            try:
-                data = await request.json()
-                if not data or "workflow" not in data:
-                    return web.json_response({
-                        "status": "error",
-                        "message": "workflow field is required"
-                    }, status=400)
-                
-                workflow_data = data["workflow"]
-                filename = data.get("filename", "workflow.json")
-                
-                # Ensure filename has .json extension
-                if not filename.endswith('.json'):
-                    filename += '.json'
-                
-                # Get workflows directory
-                workflow_dir = os.path.join(folder_paths.get_output_directory(), "workflows")
-                os.makedirs(workflow_dir, exist_ok=True)
-                
-                # Ensure the path is secure
-                file_path = os.path.join(workflow_dir, filename.replace('/', os.sep))
-                if not os.path.normpath(file_path).startswith(os.path.normpath(workflow_dir)):
-                    return web.json_response({
-                        "status": "error",
-                        "message": "Invalid filename path"
-                    }, status=400)
-                
-                # Save workflow file
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(workflow_data, f, indent=2)
-                
-                return web.json_response({
-                    "status": "success",
-                    "message": "Workflow saved successfully",
-                    "filename": filename
-                })
-
-            except Exception as e:
-                logging.error(f"Error saving workflow: {e}")
-                return web.json_response({
-                    "status": "error",
-                    "message": "Internal server error",
-                    "details": str(e)
-                }, status=500)
-
-        @routes.get("/workflow/get-and-convert")
-        async def get_and_convert_workflow(request):
-            """Get a workflow by filename and convert it to API format"""
-            try:
-                # Get filename from query parameters
-                filename = request.query.get("filename")
-                if not filename:
-                    return web.json_response({
-                        "status": "error",
-                        "message": "filename query parameter is required"
-                    }, status=400)
-                
-                # Get workflows directory
-                user_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "user")
-                workflow_dir = os.path.join(user_dir, "default", "workflows")
-                
-                # Ensure the path is secure and within the workflows directory
-                file_path = os.path.join(workflow_dir, filename.replace('/', os.sep))
-                
-                # Ensure the path is secure and within the workflows directory
-                if not os.path.normpath(file_path).startswith(os.path.normpath(workflow_dir)):
-                    return web.json_response({
-                        "status": "error",
-                        "message": "Invalid filename path"
-                    }, status=400)
-                
-                # Check if file exists
-                if not os.path.isfile(file_path):
-                    return web.json_response({
-                        "status": "error",
-                        "message": f"Workflow file not found: {filename}"
-                    }, status=404)
-                
-                # Read workflow file
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    workflow_content = f.read()
-                
-                # Parse workflow JSON
-                try:
-                    workflow_data = json.loads(workflow_content)
-                except json.JSONDecodeError:
-                    return web.json_response({
-                        "status": "error",
-                        "message": "Invalid JSON in workflow file"
-                    }, status=400)
-                
-                if not workflow_data:
-                    return web.json_response({
-                        "status": "error",
-                        "message": "Workflow file contains no data or is an empty JSON object"
-                    }, status=400)
-                
-                # Convert workflow to API format
-                options = {}
-                api_workflow = convert_workflow_to_api(workflow_data, options)
-                
-                return web.json_response({
-                    "status": "success",
-                    "message": "Workflow converted successfully",
-                    "filename": filename,
-                    "data": api_workflow
-                })
-
-            except ValueError as e:
-                return web.json_response({
-                    "status": "error",
-                    "message": str(e)
-                }, status=400)
-            except Exception as e:
-                logging.error(f"Error processing workflow: {e}")
-                return web.json_response({
-                    "status": "error",
-                    "message": "Internal server error",
-                    "details": str(e)
-                }, status=500)
-
     async def setup(self):
         timeout = aiohttp.ClientTimeout(total=None) # no timeout
         self.client_session = aiohttp.ClientSession(timeout=timeout)
@@ -1158,6 +843,47 @@ class PromptServer():
 
     async def send_json(self, event, data, sid=None):
         message = {"type": event, "data": data}
+
+        # If there is no connected client to consume conversion events, handle locally as a server-side worker
+        if (
+            event == "workflow_convert_queue"
+            and (not self.sockets or len(self.sockets) == 0)
+        ):
+            try:
+                # Extract workflow and task id
+                task_id = None
+                workflow_payload = None
+                if isinstance(data, dict):
+                    task_id = data.get("task_id")
+                    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+                    workflow_payload = inner.get("workflow")
+
+                if task_id is not None and workflow_payload is not None:
+                    # Convert workflow to API format locally
+                    options = {}
+                    api_workflow = convert_workflow_to_api(workflow_payload, options)
+
+                    # Derive base address for callback
+                    address = getattr(self, "address", None) or "127.0.0.1"
+                    if address in ("0.0.0.0", "::"):
+                        address = "127.0.0.1"
+                    port = getattr(self, "port", None)
+                    if port is None:
+                        # Fallback to CLI arg if port is not yet assigned
+                        from comfy.cli_args import args as _cli_args  # local import to avoid top-level cycles
+
+                        port = getattr(_cli_args, "port", 8188)
+
+                    callback_url = f"http://{address}:{port}/api/cpe/workflow/convert/callback"
+                    if self.client_session is not None:
+                        await self.client_session.post(
+                            callback_url,
+                            json={"task_id": task_id, "workflow": api_workflow},
+                            timeout=None,
+                        )
+            except Exception:
+                # Swallow any error here to avoid breaking the event pipeline
+                pass
 
         if sid is None:
             sockets = list(self.sockets.values())
