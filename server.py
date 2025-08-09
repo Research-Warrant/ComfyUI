@@ -149,7 +149,6 @@ def create_origin_only_middleware():
 
     return origin_only_middleware
 
-
 class PromptServer():
     def __init__(self, loop):
         PromptServer.instance = self
@@ -844,46 +843,6 @@ class PromptServer():
     async def send_json(self, event, data, sid=None):
         message = {"type": event, "data": data}
 
-        # If there is no connected client to consume conversion events, handle locally as a server-side worker
-        if (
-            event == "workflow_convert_queue"
-            and (not self.sockets or len(self.sockets) == 0)
-        ):
-            try:
-                # Extract workflow and task id
-                task_id = None
-                workflow_payload = None
-                if isinstance(data, dict):
-                    task_id = data.get("task_id")
-                    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
-                    workflow_payload = inner.get("workflow")
-
-                if task_id is not None and workflow_payload is not None:
-                    # Convert workflow to API format locally
-                    options = {}
-                    api_workflow = convert_workflow_to_api(workflow_payload, options)
-
-                    # Derive base address for callback
-                    address = getattr(self, "address", None) or "127.0.0.1"
-                    if address in ("0.0.0.0", "::"):
-                        address = "127.0.0.1"
-                    port = getattr(self, "port", None)
-                    if port is None:
-                        # Fallback to CLI arg if port is not yet assigned
-                        from comfy.cli_args import args as _cli_args  # local import to avoid top-level cycles
-
-                        port = getattr(_cli_args, "port", 8188)
-
-                    callback_url = f"http://{address}:{port}/api/cpe/workflow/convert/callback"
-                    if self.client_session is not None:
-                        await self.client_session.post(
-                            callback_url,
-                            json={"task_id": task_id, "workflow": api_workflow},
-                            timeout=None,
-                        )
-            except Exception:
-                # Swallow any error here to avoid breaking the event pipeline
-                pass
 
         if sid is None:
             sockets = list(self.sockets.values())
