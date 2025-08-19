@@ -37,7 +37,6 @@ from typing import Optional, Union
 from api_server.routes.internal.internal_routes import InternalRoutes
 from saveProcess import saveProcess
 from datetime import datetime
-from workflow_converter import WorkflowConverter
 class BinaryEventTypes:
     PREVIEW_IMAGE = 1
     UNENCODED_PREVIEW_IMAGE = 2
@@ -692,42 +691,6 @@ class PromptServer():
                     "extra_info": {}
                 }
                 return web.json_response({"error": error, "node_errors": {}}, status=400)
-        
-        @routes.post("/workflow/convert")
-        async def convert_workflow(request):
-            """Convert a non-API workflow to the API format without executing it"""
-            try:
-                json_data = await request.json()
-                
-                # Check if this is already in API format
-                if WorkflowConverter.is_api_format(json_data):
-                    # Already in API format, return as-is with nice formatting
-                    return web.json_response(json_data, dumps=lambda x: json.dumps(x, ensure_ascii=False, indent=2))
-                
-                # Convert to API format
-                if 'nodes' in json_data and 'links' in json_data:
-                    api_format = WorkflowConverter.convert_to_api(json_data)
-                    
-                    # Return just the converted API format with proper Unicode encoding
-                    # This matches what "Save (API)" produces - just the nodes
-                    # Format with nice indentation for readability
-                    return web.json_response(api_format, dumps=lambda x: json.dumps(x, ensure_ascii=False, indent=2))
-                else:
-                    return web.json_response({
-                        "error": "Invalid workflow format - missing nodes or links"
-                    }, status=400)
-                    
-            except Exception as e:
-                import traceback
-                error_msg = f"Error converting workflow: {str(e)}"
-                logging.error(error_msg)
-                logging.error(f"Traceback: {traceback.format_exc()}")
-                return web.json_response({
-                    "success": False,
-                    "error": str(e),
-                    "details": traceback.format_exc()
-                }, status=500)
-            
         @routes.post("/queue")
         async def post_queue(request):
             json_data =  await request.json()
