@@ -37,6 +37,7 @@ from typing import Optional, Union
 from api_server.routes.internal.internal_routes import InternalRoutes
 from saveProcess import saveProcess
 from datetime import datetime
+
 class BinaryEventTypes:
     PREVIEW_IMAGE = 1
     UNENCODED_PREVIEW_IMAGE = 2
@@ -691,6 +692,7 @@ class PromptServer():
                     "extra_info": {}
                 }
                 return web.json_response({"error": error, "node_errors": {}}, status=400)
+            
         @routes.post("/queue")
         async def post_queue(request):
             json_data =  await request.json()
