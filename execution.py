@@ -38,6 +38,8 @@ from comfy_api.internal import _ComfyNodeInternal, _NodeOutputInternal, first_re
 from comfy_api.latest import io, _io
 
 
+from saveProcess import saveProcess
+
 class ExecutionResult(Enum):
     SUCCESS = 0
     FAILURE = 1
@@ -583,6 +585,7 @@ async def execute(server, dynprompt, caches, current_item, extra_data, executed,
         # skip formatting inputs/outputs
         error_details = {
             "node_id": real_node_id,
+            "interrupted": True,
         }
 
         return (ExecutionResult.FAILURE, error_details, iex)
@@ -699,6 +702,7 @@ class PromptExecutor:
                 if self.caches.outputs.get(node_id) is not None:
                     cached_nodes.append(node_id)
 
+
             comfy.model_management.cleanup_models_gc()
             self.add_message("execution_cached",
                           { "nodes": cached_nodes, "prompt_id": prompt_id},
@@ -712,7 +716,19 @@ class PromptExecutor:
             for node_id in list(execute_outputs):
                 execution_list.add_node(node_id)
 
+            total_nodes = len(cached_nodes) + execution_list.length()
+
+            return_error = False
+
             while not execution_list.is_empty():
+                left_nodes = execution_list.length()
+
+                payload = {
+                    "status": "processing",
+                }
+
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "status": "processing" })
+                saveProcess(prompt_id, 100 * (total_nodes - left_nodes) / total_nodes, payload=payload)
                 node_id, error, ex = await execution_list.stage_node_execution()
                 if error is not None:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
@@ -723,6 +739,7 @@ class PromptExecutor:
                 self.success = result != ExecutionResult.FAILURE
                 if result == ExecutionResult.FAILURE:
                     self.handle_execution_error(prompt_id, dynamic_prompt.original_prompt, current_outputs, executed, error, ex)
+                    return_error = error
                     break
                 elif result == ExecutionResult.PENDING:
                     execution_list.unstage_node_execution()
@@ -732,6 +749,32 @@ class PromptExecutor:
             else:
                 # Only execute when the while-loop ends without break
                 self.add_message("execution_success", { "prompt_id": prompt_id }, broadcast=False)
+
+            left_nodes = execution_list.length()
+
+            payload = {}
+            if return_error is not False:
+                if not return_error.get("interrupted", False):
+                    self.server.send_sync(
+                        "process",
+                        {
+                            "prompt_id": prompt_id,
+                            "left_nodes": left_nodes,
+                            "total_nodes": total_nodes,
+                            "error": return_error,
+                            "status": "failed"
+                        }
+                    )
+                    payload["status"] = "failed"
+                    saveProcess(prompt_id, 0, error=return_error, payload=payload)
+                else:
+                    self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "status": "canceled" })
+                    payload['status'] = "canceled"
+                    saveProcess(prompt_id, 0, payload=payload)
+            else:
+                self.server.send_sync("process", { "prompt_id": prompt_id, "left_nodes": left_nodes, "total_nodes": total_nodes, "status": "completed" })
+                payload['status'] = "completed"
+                saveProcess(prompt_id, 100, payload=payload)
 
             ui_outputs = {}
             meta_outputs = {}
@@ -1185,6 +1228,18 @@ class PromptQueue:
 
     def wipe_queue(self):
         with self.mutex:
+            if len(self.queue) > 0:
+                for item in self.queue:
+                    prompt_id = item[1]
+                    self.server.send_sync("process", {
+                        "prompt_id": prompt_id,
+                        "left_nodes": 0,
+                        "total_nodes": 0,
+                        "error": 'Canceled',
+                        "status": "canceled"
+                    })
+
+                    saveProcess(prompt_id, 0, payload={"status": "canceled"})
             self.queue = []
             self.server.queue_updated()
 

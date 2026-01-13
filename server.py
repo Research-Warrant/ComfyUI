@@ -42,11 +42,14 @@ from app.custom_node_manager import CustomNodeManager
 from app.subgraph_manager import SubgraphManager
 from typing import Optional, Union
 from api_server.routes.internal.internal_routes import InternalRoutes
+
 from protocol import BinaryEventTypes
 
 # Import cache control middleware
 from middleware.cache_middleware import cache_control
 
+from saveProcess import saveProcess
+from datetime import datetime
 if args.enable_manager:
     import comfyui_manager
 
@@ -881,11 +884,33 @@ class PromptServer():
 
                 valid = await execution.validate_prompt(prompt_id, prompt, partial_execution_targets)
                 extra_data = {}
+                payload = {}
+                server_name = os.getenv("SERVER_NAME", "ComfyUI Server")
+                created_on = datetime.utcnow().isoformat()
+
                 if "extra_data" in json_data:
                     extra_data = json_data["extra_data"]
 
+                if "payload" in json_data:
+                    payload = json_data["payload"]
+                payload["status"] = "queued"
+                payload["server_name"]  = server_name
+                payload["created_on"] = created_on
+
+                # Extract workflowId from VideoData node
+                workflow_id = None
+                for node_id, node_data in prompt.items():
+                    if node_data.get("class_type") == "VideoData":
+                        workflow_id = node_data.get("inputs", {}).get("workflowId")
+                        break
+
+                if workflow_id:
+                    payload["workflowId"] = workflow_id
+
                 if "client_id" in json_data:
                     extra_data["client_id"] = json_data["client_id"]
+
+
                 if valid[0]:
                     outputs_to_execute = valid[2]
                     sensitive = {}
@@ -894,7 +919,8 @@ class PromptServer():
                             sensitive[sensitive_val] = extra_data.pop(sensitive_val)
                     extra_data["create_time"] = int(time.time() * 1000)  # timestamp in milliseconds
                     self.prompt_queue.put((number, prompt_id, prompt, extra_data, outputs_to_execute, sensitive))
-                    response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3]}
+                    saveProcess(prompt_id, 0, payload=payload)
+                    response = {"prompt_id": prompt_id, "number": number, "node_errors": valid[3], "payload": payload}
                     return web.json_response(response)
                 else:
                     logging.warning("invalid prompt: {}".format(valid[1]))
@@ -918,6 +944,8 @@ class PromptServer():
                 to_delete = json_data['delete']
                 for id_to_delete in to_delete:
                     delete_func = lambda a: a[1] == id_to_delete
+                    self.send_sync("process", { "prompt_id": id_to_delete, "left_nodes": 0, "total_nodes": 0, "error": 'Canceled', "status": "canceled" })
+                    saveProcess(id_to_delete, 0, payload={"status": "canceled"})
                     self.prompt_queue.delete_queue_item(delete_func)
 
             return web.Response(status=200)

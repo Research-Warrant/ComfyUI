@@ -16,6 +16,7 @@ from comfy_execution.progress import get_progress_state
 from comfy_execution.utils import get_executing_context
 from comfy_api import feature_flags
 
+from db import init_mongo_client
 
 if __name__ == "__main__":
     #NOTE: These do not do anything on core ComfyUI, they are for custom nodes.
@@ -402,6 +403,8 @@ if __name__ == "__main__":
 
     if sys.version_info.major == 3 and sys.version_info.minor < 10:
         logging.warning("WARNING: You are using a python version older than 3.10, please upgrade to a newer one. 3.12 and above is recommended.")
+
+    init_mongo_client()
 
     event_loop, _, start_all_func = start_comfyui()
     try:
