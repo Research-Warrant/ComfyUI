@@ -36,7 +36,11 @@ jobs:
               const buf = Buffer.from(res.data.content, res.data.encoding || 'base64');
               templateText = buf.toString('utf8');
             } catch (e) {
-              core.setFailed(`Required PR template not found at "${templatePath}" on ${pr.base.ref}. Please add it to the repo.`);
+              if (e.status === 404) {
+                core.notice(`Skipping API Node template injection because "${templatePath}" is not available on the base branch (${pr.base.ref}) yet.`);
+                return;
+              }
+              core.setFailed(`Failed to read "${templatePath}" from ${pr.base.ref}: ${e.message}`);
               return;
             }
 
