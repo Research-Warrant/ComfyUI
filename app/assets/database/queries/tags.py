@@ -8,12 +8,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.assets.database.models import (
+    Asset,
     AssetReference,
     AssetReferenceMeta,
     AssetReferenceTag,
     Tag,
 )
 from app.assets.database.queries.common import (
+    apply_metadata_filter,
+    apply_tag_filters,
     build_visible_owner_clause,
     iter_row_chunks,
 )
@@ -52,13 +55,11 @@ def validate_tags_exist(session: Session, tags: list[str]) -> None:
         raise ValueError(f"Unknown tags: {missing}")
 
 
-def ensure_tags_exist(
-    session: Session, names: Iterable[str], tag_type: str = "user"
-) -> None:
+def ensure_tags_exist(session: Session, names: Iterable[str]) -> None:
     wanted = normalize_tags(list(names))
     if not wanted:
         return
-    rows = [{"name": n, "tag_type": tag_type} for n in list(dict.fromkeys(wanted))]
+    rows = [{"name": n} for n in list(dict.fromkeys(wanted))]
     ins = (
         sqlite.insert(Tag)
         .values(rows)
@@ -72,9 +73,9 @@ def get_reference_tags(session: Session, reference_id: str) -> list[str]:
         tag_name
         for (tag_name,) in (
             session.execute(
-                select(AssetReferenceTag.tag_name).where(
-                    AssetReferenceTag.asset_reference_id == reference_id
-                )
+                select(AssetReferenceTag.tag_name)
+                .where(AssetReferenceTag.asset_reference_id == reference_id)
+                .order_by(AssetReferenceTag.tag_name.asc())
             )
         ).all()
     ]
@@ -94,7 +95,7 @@ def set_reference_tags(
     to_remove = [t for t in current if t not in desired]
 
     if to_add:
-        ensure_tags_exist(session, to_add, tag_type="user")
+        ensure_tags_exist(session, to_add)
         session.add_all(
             [
                 AssetReferenceTag(
@@ -117,7 +118,7 @@ def set_reference_tags(
         )
         session.flush()
 
-    return SetTagsResult(added=to_add, removed=to_remove, total=desired)
+    return SetTagsResult(added=sorted(to_add), removed=sorted(to_remove), total=sorted(desired))
 
 
 def add_tags_to_reference(
@@ -139,7 +140,7 @@ def add_tags_to_reference(
         return AddTagsResult(added=[], already_present=[], total_tags=total)
 
     if create_if_missing:
-        ensure_tags_exist(session, norm, tag_type="user")
+        ensure_tags_exist(session, norm)
 
     current = set(get_reference_tags(session, reference_id))
 
@@ -264,6 +265,8 @@ def list_tags_with_usage(
     order: str = "count_desc",
     owner_id: str = "",
 ) -> tuple[list[tuple[str, str, int]], int]:
+    prefix_filter = prefix.strip() if prefix else ""
+
     counts_sq = (
         select(
             AssetReferenceTag.tag_name.label("tag_name"),
@@ -272,6 +275,12 @@ def list_tags_with_usage(
         .select_from(AssetReferenceTag)
         .join(AssetReference, AssetReference.id == AssetReferenceTag.asset_reference_id)
         .where(build_visible_owner_clause(owner_id))
+        .where(
+            sa.or_(
+                AssetReference.is_missing == False,  # noqa: E712
+                AssetReferenceTag.tag_name == "missing",
+            )
+        )
         .where(AssetReference.deleted_at.is_(None))
         .group_by(AssetReferenceTag.tag_name)
         .subquery()
@@ -280,16 +289,14 @@ def list_tags_with_usage(
     q = (
         select(
             Tag.name,
-            Tag.tag_type,
             func.coalesce(counts_sq.c.cnt, 0).label("count"),
         )
         .select_from(Tag)
         .join(counts_sq, counts_sq.c.tag_name == Tag.name, isouter=True)
     )
 
-    if prefix:
-        escaped, esc = escape_sql_like_string(prefix.strip().lower())
-        q = q.where(Tag.name.like(escaped + "%", escape=esc))
+    if prefix_filter:
+        q = q.where(func.substr(Tag.name, 1, len(prefix_filter)) == prefix_filter)
 
     if not include_zero:
         q = q.where(func.coalesce(counts_sq.c.cnt, 0) > 0)
@@ -300,14 +307,19 @@ def list_tags_with_usage(
         q = q.order_by(func.coalesce(counts_sq.c.cnt, 0).desc(), Tag.name.asc())
 
     total_q = select(func.count()).select_from(Tag)
-    if prefix:
-        escaped, esc = escape_sql_like_string(prefix.strip().lower())
-        total_q = total_q.where(Tag.name.like(escaped + "%", escape=esc))
+    if prefix_filter:
+        total_q = total_q.where(func.substr(Tag.name, 1, len(prefix_filter)) == prefix_filter)
     if not include_zero:
         visible_tags_sq = (
             select(AssetReferenceTag.tag_name)
             .join(AssetReference, AssetReference.id == AssetReferenceTag.asset_reference_id)
             .where(build_visible_owner_clause(owner_id))
+            .where(
+                sa.or_(
+                    AssetReference.is_missing == False,  # noqa: E712
+                    AssetReferenceTag.tag_name == "missing",
+                )
+            )
             .where(AssetReference.deleted_at.is_(None))
             .group_by(AssetReferenceTag.tag_name)
         )
@@ -316,8 +328,57 @@ def list_tags_with_usage(
     rows = (session.execute(q.limit(limit).offset(offset))).all()
     total = (session.execute(total_q)).scalar_one()
 
-    rows_norm = [(name, ttype, int(count or 0)) for (name, ttype, count) in rows]
+    rows_norm = [(name, int(count or 0)) for (name, count) in rows]
     return rows_norm, int(total or 0)
+
+
+def list_tag_counts_for_filtered_assets(
+    session: Session,
+    owner_id: str = "",
+    include_tags: Sequence[str] | None = None,
+    exclude_tags: Sequence[str] | None = None,
+    name_contains: str | None = None,
+    metadata_filter: dict | None = None,
+    limit: int = 100,
+    # Appended last so pre-existing positional callers keep binding correctly.
+    any_tags: Sequence[str] | None = None,
+) -> dict[str, int]:
+    """Return tag counts for assets matching the given filters.
+
+    Uses the same filtering logic as list_references_page but returns
+    {tag_name: count} instead of paginated references.
+    """
+    # Build a subquery of matching reference IDs
+    ref_sq = (
+        select(AssetReference.id)
+        .join(Asset, Asset.id == AssetReference.asset_id)
+        .where(build_visible_owner_clause(owner_id))
+        .where(AssetReference.is_missing == False)  # noqa: E712
+        .where(AssetReference.deleted_at.is_(None))
+    )
+
+    if name_contains:
+        escaped, esc = escape_sql_like_string(name_contains)
+        ref_sq = ref_sq.where(AssetReference.name.ilike(f"%{escaped}%", escape=esc))
+
+    ref_sq = apply_tag_filters(ref_sq, include_tags, exclude_tags, any_tags)
+    ref_sq = apply_metadata_filter(ref_sq, metadata_filter)
+    ref_sq = ref_sq.subquery()
+
+    # Count tags across those references
+    q = (
+        select(
+            AssetReferenceTag.tag_name,
+            func.count(AssetReferenceTag.asset_reference_id).label("cnt"),
+        )
+        .where(AssetReferenceTag.asset_reference_id.in_(select(ref_sq.c.id)))
+        .group_by(AssetReferenceTag.tag_name)
+        .order_by(func.count(AssetReferenceTag.asset_reference_id).desc(), AssetReferenceTag.tag_name.asc())
+        .limit(limit)
+    )
+
+    rows = session.execute(q).all()
+    return {tag_name: int(cnt) for tag_name, cnt in rows}
 
 
 def bulk_insert_tags_and_meta(

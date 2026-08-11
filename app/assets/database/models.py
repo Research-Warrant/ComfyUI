@@ -45,13 +45,7 @@ class Asset(Base):
         passive_deletes=True,
     )
 
-    preview_of: Mapped[list[AssetReference]] = relationship(
-        "AssetReference",
-        back_populates="preview_asset",
-        primaryjoin=lambda: Asset.id == foreign(AssetReference.preview_id),
-        foreign_keys=lambda: [AssetReference.preview_id],
-        viewonly=True,
-    )
+    # preview_id on AssetReference is a self-referential FK to asset_references.id
 
     __table_args__ = (
         Index("uq_assets_hash", "hash", unique=True),
@@ -82,6 +76,8 @@ class AssetReference(Base):
 
     # Cache state fields (from former AssetCacheState)
     file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # In-root loader path derived from file_path at scan/ingest time.
+    loader_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     mtime_ns: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     needs_verify: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_missing: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -91,11 +87,15 @@ class AssetReference(Base):
     owner_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     name: Mapped[str] = mapped_column(String(512), nullable=False)
     preview_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("assets.id", ondelete="SET NULL")
+        String(36), ForeignKey("asset_references.id", ondelete="SET NULL")
     )
     user_metadata: Mapped[dict[str, Any] | None] = mapped_column(
         JSON(none_as_null=True)
     )
+    system_metadata: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None
+    )
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), nullable=False, default=get_utc_now
     )
@@ -115,10 +115,10 @@ class AssetReference(Base):
         foreign_keys=[asset_id],
         lazy="selectin",
     )
-    preview_asset: Mapped[Asset | None] = relationship(
-        "Asset",
-        back_populates="preview_of",
+    preview_ref: Mapped[AssetReference | None] = relationship(
+        "AssetReference",
         foreign_keys=[preview_id],
+        remote_side=lambda: [AssetReference.id],
     )
 
     metadata_entries: Mapped[list[AssetReferenceMeta]] = relationship(
@@ -152,6 +152,7 @@ class AssetReference(Base):
         Index("ix_asset_references_created_at", "created_at"),
         Index("ix_asset_references_last_access_time", "last_access_time"),
         Index("ix_asset_references_deleted_at", "deleted_at"),
+        Index("ix_asset_references_preview_id", "preview_id"),
         Index("ix_asset_references_owner_name", "owner_id", "name"),
         CheckConstraint(
             "(mtime_ns IS NULL) OR (mtime_ns >= 0)", name="ck_ar_mtime_nonneg"
@@ -192,6 +193,10 @@ class AssetReferenceMeta(Base):
         Index("ix_asset_reference_meta_key_val_str", "key", "val_str"),
         Index("ix_asset_reference_meta_key_val_num", "key", "val_num"),
         Index("ix_asset_reference_meta_key_val_bool", "key", "val_bool"),
+        CheckConstraint(
+            "val_str IS NOT NULL OR val_num IS NOT NULL OR val_bool IS NOT NULL OR val_json IS NOT NULL",
+            name="has_value",
+        ),
     )
 
 
@@ -224,7 +229,6 @@ class Tag(Base):
     __tablename__ = "tags"
 
     name: Mapped[str] = mapped_column(String(512), primary_key=True)
-    tag_type: Mapped[str] = mapped_column(String(32), nullable=False, default="user")
 
     asset_reference_links: Mapped[list[AssetReferenceTag]] = relationship(
         back_populates="tag",
@@ -236,8 +240,6 @@ class Tag(Base):
         viewonly=True,
         overlaps="asset_reference_links,tag_links,tags,asset_reference",
     )
-
-    __table_args__ = (Index("ix_tags_tag_type", "tag_type"),)
 
     def __repr__(self) -> str:
         return f"<Tag {self.name}>"

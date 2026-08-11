@@ -45,11 +45,17 @@ class ParsedUpload:
     user_metadata_raw: str | None
     provided_hash: str | None
     provided_hash_exists: bool | None
+    provided_mime_type: str | None = None
+    provided_preview_id: str | None = None
 
 
 class ListAssetsQuery(BaseModel):
-    include_tags: list[str] = Field(default_factory=list)
-    exclude_tags: list[str] = Field(default_factory=list)
+    # Deprecated spellings: include_tags ≡ tags_all, exclude_tags ≡ tags_none.
+    include_tags: list[str] = Field(default_factory=list, deprecated=True)
+    exclude_tags: list[str] = Field(default_factory=list, deprecated=True)
+    tags_all: list[str] = Field(default_factory=list)
+    tags_any: list[str] = Field(default_factory=list)
+    tags_none: list[str] = Field(default_factory=list)
     name_contains: str | None = None
 
     # Accept either a JSON string (query param) or a dict
@@ -57,13 +63,21 @@ class ListAssetsQuery(BaseModel):
 
     limit: conint(ge=1, le=500) = 20
     offset: conint(ge=0) = 0
+    # Opaque keyset cursor. When supplied, `offset` is ignored. Cursor pagination
+    # is supported for sort values `created_at`, `updated_at`, `name`, `size`.
+    # Supplying `after` together with `sort=last_access_time` returns
+    # 400 INVALID_CURSOR; that sort only supports offset/limit.
+    after: str | None = None
 
     sort: Literal["name", "created_at", "updated_at", "size", "last_access_time"] = (
         "created_at"
     )
     order: Literal["asc", "desc"] = "desc"
 
-    @field_validator("include_tags", "exclude_tags", mode="before")
+    @field_validator(
+        "include_tags", "exclude_tags", "tags_all", "tags_any", "tags_none",
+        mode="before",
+    )
     @classmethod
     def _split_csv_tags(cls, v):
         # Accept "a,b,c" or ["a","b"] (we are liberal in what we accept)
@@ -98,11 +112,17 @@ class ListAssetsQuery(BaseModel):
 class UpdateAssetBody(BaseModel):
     name: str | None = None
     user_metadata: dict[str, Any] | None = None
+    preview_id: str | None = None  # references an asset_reference id, not an asset id
 
     @model_validator(mode="after")
     def _validate_at_least_one_field(self):
-        if self.name is None and self.user_metadata is None:
-            raise ValueError("Provide at least one of: name, user_metadata.")
+        if all(
+            v is None
+            for v in (self.name, self.user_metadata, self.preview_id)
+        ):
+            raise ValueError(
+                "Provide at least one of: name, user_metadata, preview_id."
+            )
         return self
 
 
@@ -110,9 +130,11 @@ class CreateFromHashBody(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
     hash: str
-    name: str
+    name: str | None = None
     tags: list[str] = Field(default_factory=list)
     user_metadata: dict[str, Any] = Field(default_factory=dict)
+    mime_type: str | None = None
+    preview_id: str | None = None  # references an asset_reference id, not an asset id
 
     @field_validator("hash")
     @classmethod
@@ -125,7 +147,7 @@ class CreateFromHashBody(BaseModel):
         if v is None:
             return []
         if isinstance(v, list):
-            out = [str(t).strip().lower() for t in v if str(t).strip()]
+            out = [str(t).strip() for t in v if str(t).strip()]
             seen = set()
             dedup = []
             for t in out:
@@ -134,8 +156,53 @@ class CreateFromHashBody(BaseModel):
                     dedup.append(t)
             return dedup
         if isinstance(v, str):
-            return [t.strip().lower() for t in v.split(",") if t.strip()]
+            return list(dict.fromkeys(t.strip() for t in v.split(",") if t.strip()))
         return []
+
+
+class TagsRefineQuery(BaseModel):
+    # Deprecated spellings: include_tags ≡ tags_all, exclude_tags ≡ tags_none.
+    include_tags: list[str] = Field(default_factory=list, deprecated=True)
+    exclude_tags: list[str] = Field(default_factory=list, deprecated=True)
+    tags_all: list[str] = Field(default_factory=list)
+    tags_any: list[str] = Field(default_factory=list)
+    tags_none: list[str] = Field(default_factory=list)
+    name_contains: str | None = None
+    metadata_filter: dict[str, Any] | None = None
+    limit: conint(ge=1, le=1000) = 100
+
+    @field_validator(
+        "include_tags", "exclude_tags", "tags_all", "tags_any", "tags_none",
+        mode="before",
+    )
+    @classmethod
+    def _split_csv_tags(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [t.strip() for t in v.split(",") if t.strip()]
+        if isinstance(v, list):
+            out: list[str] = []
+            for item in v:
+                if isinstance(item, str):
+                    out.extend([t.strip() for t in item.split(",") if t.strip()])
+            return out
+        return v
+
+    @field_validator("metadata_filter", mode="before")
+    @classmethod
+    def _parse_metadata_json(cls, v):
+        if v is None or isinstance(v, dict):
+            return v
+        if isinstance(v, str) and v.strip():
+            try:
+                parsed = json.loads(v)
+            except Exception as e:
+                raise ValueError(f"metadata_filter must be JSON: {e}") from e
+            if not isinstance(parsed, dict):
+                raise ValueError("metadata_filter must be a JSON object")
+            return parsed
+        return None
 
 
 class TagsListQuery(BaseModel):
@@ -153,7 +220,7 @@ class TagsListQuery(BaseModel):
         if v is None:
             return v
         v = v.strip()
-        return v.lower() or None
+        return v or None
 
 
 class TagsAdd(BaseModel):
@@ -167,7 +234,7 @@ class TagsAdd(BaseModel):
         for t in v:
             if not isinstance(t, str):
                 raise TypeError("tags must be strings")
-            tnorm = t.strip().lower()
+            tnorm = t.strip()
             if tnorm:
                 out.append(tnorm)
         seen = set()
@@ -186,21 +253,25 @@ class TagsRemove(TagsAdd):
 class UploadAssetSpec(BaseModel):
     """Upload Asset operation.
 
-    - tags: ordered; first is root ('models'|'input'|'output');
-            if root == 'models', second must be a valid category
+    - tags: labels plus one destination role ('models'|'input'|'output') for new bytes;
+            if role == 'models', exactly one model_type:<folder_name> tag is required
     - name: display name
     - user_metadata: arbitrary JSON object (optional)
     - hash: optional canonical 'blake3:<hex>' for validation / fast-path
+    - mime_type: optional MIME type override
+    - preview_id: optional asset_reference ID for preview
 
     Files are stored using the content hash as filename stem.
     """
 
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
-    tags: list[str] = Field(..., min_length=1)
+    tags: list[str] = Field(default_factory=list)
     name: str | None = Field(default=None, max_length=512, description="Display Name")
     user_metadata: dict[str, Any] = Field(default_factory=dict)
     hash: str | None = Field(default=None)
+    mime_type: str | None = Field(default=None)
+    preview_id: str | None = Field(default=None)  # references an asset_reference id
 
     @field_validator("hash", mode="before")
     @classmethod
@@ -252,7 +323,7 @@ class UploadAssetSpec(BaseModel):
         norm = []
         seen = set()
         for t in items:
-            tnorm = str(t).strip().lower()
+            tnorm = str(t).strip()
             if tnorm and tnorm not in seen:
                 seen.add(tnorm)
                 norm.append(tnorm)
@@ -278,14 +349,4 @@ class UploadAssetSpec(BaseModel):
 
     @model_validator(mode="after")
     def _validate_order(self):
-        if not self.tags:
-            raise ValueError("tags must be provided and non-empty")
-        root = self.tags[0]
-        if root not in {"models", "input", "output"}:
-            raise ValueError("first tag must be one of: models, input, output")
-        if root == "models":
-            if len(self.tags) < 2:
-                raise ValueError(
-                    "models uploads require a category tag as the second tag"
-                )
         return self

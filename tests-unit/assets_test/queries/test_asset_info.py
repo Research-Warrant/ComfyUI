@@ -133,6 +133,66 @@ class TestListReferencesPage:
         assert total == 1
         assert refs[0].name == "tagged"
 
+    def test_include_tags_filter_ands_persisted_model_tags(self, session: Session):
+        asset = _make_asset(session, "hash-model-tags")
+        checkpoint = _make_reference(session, asset, name="checkpoint")
+        lora = _make_reference(session, asset, name="lora")
+        input_ref = _make_reference(session, asset, name="input")
+        ensure_tags_exist(
+            session,
+            ["models", "model_type:checkpoints", "model_type:loras", "unit-tests"],
+        )
+        add_tags_to_reference(
+            session,
+            reference_id=checkpoint.id,
+            tags=["models", "model_type:checkpoints", "unit-tests"],
+            origin="automatic",
+        )
+        add_tags_to_reference(
+            session,
+            reference_id=lora.id,
+            tags=["models", "model_type:loras", "unit-tests"],
+            origin="automatic",
+        )
+        add_tags_to_reference(
+            session,
+            reference_id=input_ref.id,
+            tags=["unit-tests"],
+        )
+        session.commit()
+
+        refs, _, total = list_references_page(
+            session,
+            include_tags=["models", "model_type:checkpoints", "unit-tests"],
+        )
+
+        assert total == 1
+        assert refs[0].id == checkpoint.id
+
+    def test_include_tags_filter_preserves_model_type_case(self, session: Session):
+        asset = _make_asset(session, "hash-model-case")
+        ref = _make_reference(session, asset, name="llm")
+        ensure_tags_exist(session, ["models", "model_type:LLM"])
+        add_tags_to_reference(
+            session,
+            reference_id=ref.id,
+            tags=["models", "model_type:LLM"],
+            origin="automatic",
+        )
+        session.commit()
+
+        refs, _, total = list_references_page(
+            session, include_tags=["models", "model_type:LLM"]
+        )
+        refs_lower, _, total_lower = list_references_page(
+            session, include_tags=["models", "model_type:llm"]
+        )
+
+        assert total == 1
+        assert refs[0].id == ref.id
+        assert total_lower == 0
+        assert refs_lower == []
+
     def test_exclude_tags_filter(self, session: Session):
         asset = _make_asset(session, "hash1")
         _make_reference(session, asset, name="keep")
@@ -242,22 +302,24 @@ class TestSetReferencePreview:
         asset = _make_asset(session, "hash1")
         preview_asset = _make_asset(session, "preview_hash")
         ref = _make_reference(session, asset)
+        preview_ref = _make_reference(session, preview_asset, name="preview.png")
         session.commit()
 
-        set_reference_preview(session, reference_id=ref.id, preview_asset_id=preview_asset.id)
+        set_reference_preview(session, reference_id=ref.id, preview_reference_id=preview_ref.id)
         session.commit()
 
         session.refresh(ref)
-        assert ref.preview_id == preview_asset.id
+        assert ref.preview_id == preview_ref.id
 
     def test_clears_preview(self, session: Session):
         asset = _make_asset(session, "hash1")
         preview_asset = _make_asset(session, "preview_hash")
         ref = _make_reference(session, asset)
-        ref.preview_id = preview_asset.id
+        preview_ref = _make_reference(session, preview_asset, name="preview.png")
+        ref.preview_id = preview_ref.id
         session.commit()
 
-        set_reference_preview(session, reference_id=ref.id, preview_asset_id=None)
+        set_reference_preview(session, reference_id=ref.id, preview_reference_id=None)
         session.commit()
 
         session.refresh(ref)
@@ -265,15 +327,15 @@ class TestSetReferencePreview:
 
     def test_raises_for_nonexistent_reference(self, session: Session):
         with pytest.raises(ValueError, match="not found"):
-            set_reference_preview(session, reference_id="nonexistent", preview_asset_id=None)
+            set_reference_preview(session, reference_id="nonexistent", preview_reference_id=None)
 
     def test_raises_for_nonexistent_preview(self, session: Session):
         asset = _make_asset(session, "hash1")
         ref = _make_reference(session, asset)
         session.commit()
 
-        with pytest.raises(ValueError, match="Preview Asset"):
-            set_reference_preview(session, reference_id=ref.id, preview_asset_id="nonexistent")
+        with pytest.raises(ValueError, match="Preview AssetReference"):
+            set_reference_preview(session, reference_id=ref.id, preview_reference_id="nonexistent")
 
 
 class TestInsertReference:
@@ -351,13 +413,14 @@ class TestUpdateReferenceTimestamps:
         asset = _make_asset(session, "hash1")
         preview_asset = _make_asset(session, "preview_hash")
         ref = _make_reference(session, asset)
+        preview_ref = _make_reference(session, preview_asset, name="preview.png")
         session.commit()
 
-        update_reference_timestamps(session, ref, preview_id=preview_asset.id)
+        update_reference_timestamps(session, ref, preview_id=preview_ref.id)
         session.commit()
 
         session.refresh(ref)
-        assert ref.preview_id == preview_asset.id
+        assert ref.preview_id == preview_ref.id
 
 
 class TestSetReferenceMetadata:
