@@ -13,11 +13,12 @@ from pydantic import ValidationError
 import folder_paths
 from app import user_manager
 from app.assets.api import schemas_in, schemas_out
+from app.assets.services import schemas
 from app.assets.api.schemas_in import (
     AssetValidationError,
     UploadError,
 )
-from app.assets.helpers import validate_blake3_hash
+from app.assets.helpers import normalize_tags, validate_blake3_hash
 from app.assets.api.upload import (
     delete_temp_file_if_exists,
     parse_multipart_upload,
@@ -38,6 +39,9 @@ from app.assets.services import (
     update_asset_metadata,
     upload_from_temp_path,
 )
+from app.assets.services.cursor import InvalidCursorError
+from app.assets.services.path_utils import compute_display_name
+from app.assets.services.tagging import list_tag_histogram
 
 ROUTES = web.RouteTableDef()
 USER_MANAGER: user_manager.UserManager | None = None
@@ -113,6 +117,87 @@ def _build_validation_error_response(code: str, ve: ValidationError) -> web.Resp
     return _build_error_response(400, code, "Validation failed.", {"errors": errors})
 
 
+class InvalidTagFilterError(Exception):
+    """Invalid combination of tag-filter query parameters."""
+
+    def __init__(self, message: str, details: dict):
+        super().__init__(message)
+        self.details = details
+
+
+# Caps the per-tag EXISTS fan-out; deliberately covers the legacy spellings too.
+MAX_TAG_FILTER_TAGS = 100
+
+
+def _resolve_tag_filters(
+    q: schemas_in.ListAssetsQuery | schemas_in.TagsRefineQuery,
+) -> tuple[list[str], list[str], list[str]]:
+    """Resolve legacy (include/exclude) and new (all/any/none) tag-filter
+    spellings into effective (all, any, none) lists.
+
+    Combination validation applies only when the request uses at least one
+    new-name parameter (non-empty after normalisation); requests using only
+    the legacy names keep their historical behaviour, including degenerate
+    combinations like include_tags=a&exclude_tags=a.
+    """
+    # model_dump, not attribute access: deprecated fields warn on every attribute read.
+    legacy = q.model_dump(include={"include_tags", "exclude_tags"})
+    include_tags = normalize_tags(legacy["include_tags"])
+    exclude_tags = normalize_tags(legacy["exclude_tags"])
+    tags_all = normalize_tags(q.tags_all)
+    tags_any = normalize_tags(q.tags_any)
+    tags_none = normalize_tags(q.tags_none)
+
+    for param_name, values in (
+        ("include_tags", include_tags),
+        ("exclude_tags", exclude_tags),
+        ("tags_all", tags_all),
+        ("tags_any", tags_any),
+        ("tags_none", tags_none),
+    ):
+        if len(values) > MAX_TAG_FILTER_TAGS:
+            raise InvalidTagFilterError(
+                f"'{param_name}' lists {len(values)} tags; the maximum is "
+                f"{MAX_TAG_FILTER_TAGS}.",
+                {
+                    "parameter": param_name,
+                    "count": len(values),
+                    "max": MAX_TAG_FILTER_TAGS,
+                },
+            )
+
+    if not (tags_all or tags_any or tags_none):
+        return include_tags, [], exclude_tags
+
+    if include_tags and tags_all:
+        raise InvalidTagFilterError(
+            "Cannot combine 'include_tags' with 'tags_all'; use 'tags_all'.",
+            {"parameters": ["include_tags", "tags_all"]},
+        )
+    if exclude_tags and tags_none:
+        raise InvalidTagFilterError(
+            "Cannot combine 'exclude_tags' with 'tags_none'; use 'tags_none'.",
+            {"parameters": ["exclude_tags", "tags_none"]},
+        )
+
+    all_param, all_list = (
+        ("tags_all", tags_all) if tags_all else ("include_tags", include_tags)
+    )
+    none_param, none_list = (
+        ("tags_none", tags_none) if tags_none else ("exclude_tags", exclude_tags)
+    )
+
+    conflicting = sorted(set(all_list) & set(none_list))
+    if conflicting:
+        raise InvalidTagFilterError(
+            f"Query can never match: {', '.join(repr(t) for t in conflicting)} "
+            f"required by '{all_param}' but rejected by '{none_param}'.",
+            {"conflicting_tags": conflicting, "parameters": [all_param, none_param]},
+        )
+
+    return all_list, tags_any, none_list
+
+
 def _validate_sort_field(requested: str | None) -> str:
     if not requested:
         return "created_at"
@@ -120,6 +205,71 @@ def _validate_sort_field(requested: str | None) -> str:
     if v in {"name", "created_at", "updated_at", "size", "last_access_time"}:
         return v
     return "created_at"
+
+
+def _build_preview_url_from_view(tags: list[str], user_metadata: dict[str, Any] | None) -> str | None:
+    """Build a /api/view preview URL from asset tags and user_metadata filename."""
+    if not user_metadata:
+        return None
+    filename = user_metadata.get("filename")
+    if not filename:
+        return None
+
+    if "input" in tags:
+        view_type = "input"
+    elif "output" in tags:
+        view_type = "output"
+    else:
+        return None
+
+    subfolder = ""
+    if "/" in filename:
+        subfolder, filename = filename.rsplit("/", 1)
+
+    encoded_filename = urllib.parse.quote(filename, safe="")
+    url = f"/api/view?type={view_type}&filename={encoded_filename}"
+    if subfolder:
+        url += f"&subfolder={urllib.parse.quote(subfolder, safe='')}"
+    return url
+
+
+def _build_asset_response(result: schemas.AssetDetailResult | schemas.UploadResult) -> schemas_out.Asset:
+    """Build an Asset response from a service result."""
+    if result.ref.preview_id:
+        preview_detail = get_asset_detail(result.ref.preview_id)
+        if preview_detail:
+            preview_url = _build_preview_url_from_view(preview_detail.tags, preview_detail.ref.user_metadata)
+        else:
+            preview_url = None
+    else:
+        preview_url = _build_preview_url_from_view(result.tags, result.ref.user_metadata)
+    if result.ref.file_path:
+        display_name = compute_display_name(result.ref.file_path)
+        # In-root loader path (model category dropped): what model loaders consume.
+        loader_path = result.ref.loader_path
+    else:
+        display_name, loader_path = None, None
+    asset_content_hash = result.asset.hash if result.asset else None
+    return schemas_out.Asset(
+        id=result.ref.id,
+        name=result.ref.name,
+        hash=asset_content_hash,
+        loader_path=loader_path,
+        display_name=display_name,
+        asset_hash=asset_content_hash,
+        size=int(result.asset.size_bytes) if result.asset else None,
+        mime_type=result.asset.mime_type if result.asset else None,
+        tags=result.tags,
+        preview_url=preview_url,
+        preview_id=result.ref.preview_id,
+        user_metadata=result.ref.user_metadata or {},
+        metadata=result.ref.system_metadata,
+        job_id=result.ref.job_id,
+        prompt_id=result.ref.job_id,  # deprecated alias of job_id, kept for compatibility
+        created_at=result.ref.created_at,
+        updated_at=result.ref.updated_at,
+        last_access_time=result.ref.last_access_time,
+    )
 
 
 @ROUTES.head("/api/assets/hash/{hash}")
@@ -148,41 +298,47 @@ async def list_assets_route(request: web.Request) -> web.Response:
     except ValidationError as ve:
         return _build_validation_error_response("INVALID_QUERY", ve)
 
+    try:
+        tags_all, tags_any, tags_none = _resolve_tag_filters(q)
+    except InvalidTagFilterError as e:
+        return _build_error_response(400, "INVALID_TAG_FILTER", str(e), e.details)
+
     sort = _validate_sort_field(q.sort)
     order_candidate = (q.order or "desc").lower()
     order = order_candidate if order_candidate in {"asc", "desc"} else "desc"
 
-    result = list_assets_page(
-        owner_id=USER_MANAGER.get_request_user_id(request),
-        include_tags=q.include_tags,
-        exclude_tags=q.exclude_tags,
-        name_contains=q.name_contains,
-        metadata_filter=q.metadata_filter,
-        limit=q.limit,
-        offset=q.offset,
-        sort=sort,
-        order=order,
-    )
-
-    summaries = [
-        schemas_out.AssetSummary(
-            id=item.ref.id,
-            name=item.ref.name,
-            asset_hash=item.asset.hash if item.asset else None,
-            size=int(item.asset.size_bytes) if item.asset else None,
-            mime_type=item.asset.mime_type if item.asset else None,
-            tags=item.tags,
-            created_at=item.ref.created_at,
-            updated_at=item.ref.updated_at,
-            last_access_time=item.ref.last_access_time,
+    try:
+        result = list_assets_page(
+            owner_id=USER_MANAGER.get_request_user_id(request),
+            include_tags=tags_all,
+            exclude_tags=tags_none,
+            any_tags=tags_any,
+            name_contains=q.name_contains,
+            metadata_filter=q.metadata_filter,
+            limit=q.limit,
+            offset=q.offset,
+            sort=sort,
+            order=order,
+            after=q.after,
         )
-        for item in result.items
-    ]
+    except InvalidCursorError as e:
+        return _build_error_response(400, "INVALID_CURSOR", str(e))
+
+    summaries = [_build_asset_response(item) for item in result.items]
+
+    # has_more semantics differ by mode:
+    #   - cursor mode: a non-empty next_cursor means there are more results.
+    #   - offset mode: derived from total - (offset + page size).
+    if q.after is not None:
+        has_more = result.next_cursor is not None
+    else:
+        has_more = (q.offset + len(summaries)) < result.total
 
     payload = schemas_out.AssetsList(
         assets=summaries,
         total=result.total,
-        has_more=(q.offset + len(summaries)) < result.total,
+        has_more=has_more,
+        next_cursor=result.next_cursor,
     )
     return web.json_response(payload.model_dump(mode="json", exclude_none=True))
 
@@ -207,18 +363,7 @@ async def get_asset_route(request: web.Request) -> web.Response:
                 {"id": reference_id},
             )
 
-        payload = schemas_out.AssetDetail(
-            id=result.ref.id,
-            name=result.ref.name,
-            asset_hash=result.asset.hash if result.asset else None,
-            size=int(result.asset.size_bytes) if result.asset else None,
-            mime_type=result.asset.mime_type if result.asset else None,
-            tags=result.tags,
-            user_metadata=result.ref.user_metadata or {},
-            preview_id=result.ref.preview_id,
-            created_at=result.ref.created_at,
-            last_access_time=result.ref.last_access_time,
-        )
+        payload = _build_asset_response(result)
     except ValueError as e:
         return _build_error_response(
             404, "ASSET_NOT_FOUND", str(e), {"id": reference_id}
@@ -230,7 +375,7 @@ async def get_asset_route(request: web.Request) -> web.Response:
             USER_MANAGER.get_request_user_id(request),
         )
         return _build_error_response(500, "INTERNAL", "Unexpected server error.")
-    return web.json_response(payload.model_dump(mode="json"), status=200)
+    return web.json_response(payload.model_dump(mode="json", exclude_none=True), status=200)
 
 
 @ROUTES.get(f"/api/assets/{{id:{UUID_RE}}}/content")
@@ -257,12 +402,29 @@ async def download_asset_content(request: web.Request) -> web.Response:
             404, "FILE_NOT_FOUND", "Underlying file not found on disk."
         )
 
-    _DANGEROUS_MIME_TYPES = {
-        "text/html", "text/html-sandboxed", "application/xhtml+xml",
-        "text/javascript", "text/css",
-    }
-    if content_type in _DANGEROUS_MIME_TYPES:
-        content_type = "application/octet-stream"
+    # User-controlled asset content must not render inline in the app origin
+    # (stored XSS via SVG/HTML/XML). Force dangerous types to download and
+    # override any requested inline disposition; SVG loaded into an <img> is
+    # exempt, see renders_safely_as_image. Centralised through folder_paths so
+    # this can't drift from /view and /userdata (the previous inline set here
+    # omitted image/svg+xml and missed the charset/casing/+xml-dialect bypasses).
+    extra_headers = {}
+    sec_fetch_dest = request.headers.get("Sec-Fetch-Dest")
+    if folder_paths.is_dangerous_content_type(content_type):
+        # This response now depends on a request header, so it must not be
+        # reused across destinations by a browser or intermediary cache: an
+        # inline SVG primed by an <img> fetch and replayed to a document
+        # navigation of the same URL would re-enable the stored XSS.
+        extra_headers["Vary"] = "Sec-Fetch-Dest"
+        extra_headers["Cache-Control"] = "no-store"
+        if not folder_paths.renders_safely_as_image(content_type, sec_fetch_dest):
+            content_type = "application/octet-stream"
+            disposition = "attachment"
+
+    # mime_type is uploader-supplied and unvalidated, so it can carry
+    # parameters. aiohttp rejects a charset in the content_type argument with
+    # ValueError, which would turn a valid inline SVG into a 500.
+    content_type = content_type.split(";", 1)[0].strip() or "application/octet-stream"
 
     safe_name = (filename or "").replace("\r", "").replace("\n", "")
     encoded = urllib.parse.quote(safe_name)
@@ -295,6 +457,7 @@ async def download_asset_content(request: web.Request) -> web.Response:
             "Content-Disposition": cd,
             "Content-Length": str(file_size),
             "X-Content-Type-Options": "nosniff",
+            **extra_headers,
         },
     )
 
@@ -312,32 +475,31 @@ async def create_asset_from_hash_route(request: web.Request) -> web.Response:
             400, "INVALID_JSON", "Request body must be valid JSON."
         )
 
+    # Derive name from hash if not provided
+    name = body.name
+    if name is None:
+        name = body.hash.split(":", 1)[1] if ":" in body.hash else body.hash
+
     result = create_from_hash(
         hash_str=body.hash,
-        name=body.name,
+        name=name,
         tags=body.tags,
         user_metadata=body.user_metadata,
         owner_id=USER_MANAGER.get_request_user_id(request),
+        mime_type=body.mime_type,
+        preview_id=body.preview_id,
     )
     if result is None:
         return _build_error_response(
             404, "ASSET_NOT_FOUND", f"Asset content {body.hash} does not exist"
         )
 
+    asset = _build_asset_response(result)
     payload_out = schemas_out.AssetCreated(
-        id=result.ref.id,
-        name=result.ref.name,
-        asset_hash=result.asset.hash,
-        size=int(result.asset.size_bytes),
-        mime_type=result.asset.mime_type,
-        tags=result.tags,
-        user_metadata=result.ref.user_metadata or {},
-        preview_id=result.ref.preview_id,
-        created_at=result.ref.created_at,
-        last_access_time=result.ref.last_access_time,
+        **asset.model_dump(),
         created_new=result.created_new,
     )
-    return web.json_response(payload_out.model_dump(mode="json"), status=201)
+    return web.json_response(payload_out.model_dump(mode="json", exclude_none=True), status=201)
 
 
 @ROUTES.post("/api/assets")
@@ -358,6 +520,8 @@ async def upload_asset(request: web.Request) -> web.Response:
                 "name": parsed.provided_name,
                 "user_metadata": parsed.user_metadata_raw,
                 "hash": parsed.provided_hash,
+                "mime_type": parsed.provided_mime_type,
+                "preview_id": parsed.provided_preview_id,
             }
         )
     except ValidationError as ve:
@@ -365,17 +529,6 @@ async def upload_asset(request: web.Request) -> web.Response:
         return _build_error_response(
             400, "INVALID_BODY", f"Validation failed: {ve.json()}"
         )
-
-    if spec.tags and spec.tags[0] == "models":
-        if (
-            len(spec.tags) < 2
-            or spec.tags[1] not in folder_paths.folder_names_and_paths
-        ):
-            delete_temp_file_if_exists(parsed.tmp_path)
-            category = spec.tags[1] if len(spec.tags) >= 2 else ""
-            return _build_error_response(
-                400, "INVALID_BODY", f"unknown models category '{category}'"
-            )
 
     try:
         # Fast path: hash exists, create AssetReference without writing anything
@@ -386,6 +539,8 @@ async def upload_asset(request: web.Request) -> web.Response:
                 tags=spec.tags,
                 user_metadata=spec.user_metadata or {},
                 owner_id=owner_id,
+                mime_type=spec.mime_type,
+                preview_id=spec.preview_id,
             )
             if result is None:
                 delete_temp_file_if_exists(parsed.tmp_path)
@@ -410,13 +565,15 @@ async def upload_asset(request: web.Request) -> web.Response:
                 client_filename=parsed.file_client_name,
                 owner_id=owner_id,
                 expected_hash=spec.hash,
+                mime_type=spec.mime_type,
+                preview_id=spec.preview_id,
             )
     except AssetValidationError as e:
         delete_temp_file_if_exists(parsed.tmp_path)
         return _build_error_response(400, e.code, str(e))
     except ValueError as e:
         delete_temp_file_if_exists(parsed.tmp_path)
-        return _build_error_response(400, "BAD_REQUEST", str(e))
+        return _build_error_response(400, "INVALID_BODY", str(e))
     except HashMismatchError as e:
         delete_temp_file_if_exists(parsed.tmp_path)
         return _build_error_response(400, "HASH_MISMATCH", str(e))
@@ -428,21 +585,13 @@ async def upload_asset(request: web.Request) -> web.Response:
         logging.exception("upload_asset failed for owner_id=%s", owner_id)
         return _build_error_response(500, "INTERNAL", "Unexpected server error.")
 
-    payload = schemas_out.AssetCreated(
-        id=result.ref.id,
-        name=result.ref.name,
-        asset_hash=result.asset.hash,
-        size=int(result.asset.size_bytes),
-        mime_type=result.asset.mime_type,
-        tags=result.tags,
-        user_metadata=result.ref.user_metadata or {},
-        preview_id=result.ref.preview_id,
-        created_at=result.ref.created_at,
-        last_access_time=result.ref.last_access_time,
+    asset = _build_asset_response(result)
+    payload_out = schemas_out.AssetCreated(
+        **asset.model_dump(),
         created_new=result.created_new,
     )
     status = 201 if result.created_new else 200
-    return web.json_response(payload.model_dump(mode="json"), status=status)
+    return web.json_response(payload_out.model_dump(mode="json", exclude_none=True), status=status)
 
 
 @ROUTES.put(f"/api/assets/{{id:{UUID_RE}}}")
@@ -464,15 +613,9 @@ async def update_asset_route(request: web.Request) -> web.Response:
             name=body.name,
             user_metadata=body.user_metadata,
             owner_id=USER_MANAGER.get_request_user_id(request),
+            preview_id=body.preview_id,
         )
-        payload = schemas_out.AssetUpdated(
-            id=result.ref.id,
-            name=result.ref.name,
-            asset_hash=result.asset.hash if result.asset else None,
-            tags=result.tags,
-            user_metadata=result.ref.user_metadata or {},
-            updated_at=result.ref.updated_at,
-        )
+        payload = _build_asset_response(result)
     except PermissionError as pe:
         return _build_error_response(403, "FORBIDDEN", str(pe), {"id": reference_id})
     except ValueError as ve:
@@ -486,25 +629,21 @@ async def update_asset_route(request: web.Request) -> web.Response:
             USER_MANAGER.get_request_user_id(request),
         )
         return _build_error_response(500, "INTERNAL", "Unexpected server error.")
-    return web.json_response(payload.model_dump(mode="json"), status=200)
+    return web.json_response(payload.model_dump(mode="json", exclude_none=True), status=200)
 
 
 @ROUTES.delete(f"/api/assets/{{id:{UUID_RE}}}")
 @_require_assets_feature_enabled
 async def delete_asset_route(request: web.Request) -> web.Response:
     reference_id = str(uuid.UUID(request.match_info["id"]))
-    delete_content_param = request.query.get("delete_content")
-    delete_content = (
-        False
-        if delete_content_param is None
-        else delete_content_param.lower() not in {"0", "false", "no"}
-    )
 
     try:
+        # Deleting an asset is a soft delete of the reference; the underlying
+        # content is preserved (it may be shared with other references).
         deleted = delete_asset_reference(
             reference_id=reference_id,
             owner_id=USER_MANAGER.get_request_user_id(request),
-            delete_content_if_orphan=delete_content,
+            delete_content_if_orphan=False,
         )
     except Exception:
         logging.exception(
@@ -549,13 +688,13 @@ async def get_tags(request: web.Request) -> web.Response:
     )
 
     tags = [
-        schemas_out.TagUsage(name=name, count=count, type=tag_type)
-        for (name, tag_type, count) in rows
+        schemas_out.TagUsage(name=name, count=count)
+        for (name, count) in rows
     ]
     payload = schemas_out.TagsList(
         tags=tags, total=total, has_more=(query.offset + len(tags)) < total
     )
-    return web.json_response(payload.model_dump(mode="json"))
+    return web.json_response(payload.model_dump(mode="json", exclude_none=True))
 
 
 @ROUTES.post(f"/api/assets/{{id:{UUID_RE}}}/tags")
@@ -603,7 +742,7 @@ async def add_asset_tags(request: web.Request) -> web.Response:
         )
         return _build_error_response(500, "INTERNAL", "Unexpected server error.")
 
-    return web.json_response(payload.model_dump(mode="json"), status=200)
+    return web.json_response(payload.model_dump(mode="json", exclude_none=True), status=200)
 
 
 @ROUTES.delete(f"/api/assets/{{id:{UUID_RE}}}/tags")
@@ -650,7 +789,35 @@ async def delete_asset_tags(request: web.Request) -> web.Response:
         )
         return _build_error_response(500, "INTERNAL", "Unexpected server error.")
 
-    return web.json_response(payload.model_dump(mode="json"), status=200)
+    return web.json_response(payload.model_dump(mode="json", exclude_none=True), status=200)
+
+
+@ROUTES.get("/api/assets/tags/refine")
+@_require_assets_feature_enabled
+async def get_tags_refine(request: web.Request) -> web.Response:
+    """GET request to get tag histogram for filtered assets."""
+    query_dict = get_query_dict(request)
+    try:
+        q = schemas_in.TagsRefineQuery.model_validate(query_dict)
+    except ValidationError as ve:
+        return _build_validation_error_response("INVALID_QUERY", ve)
+
+    try:
+        tags_all, tags_any, tags_none = _resolve_tag_filters(q)
+    except InvalidTagFilterError as e:
+        return _build_error_response(400, "INVALID_TAG_FILTER", str(e), e.details)
+
+    tag_counts = list_tag_histogram(
+        owner_id=USER_MANAGER.get_request_user_id(request),
+        include_tags=tags_all,
+        exclude_tags=tags_none,
+        any_tags=tags_any,
+        name_contains=q.name_contains,
+        metadata_filter=q.metadata_filter,
+        limit=q.limit,
+    )
+    payload = schemas_out.TagHistogram(tag_counts=tag_counts)
+    return web.json_response(payload.model_dump(mode="json", exclude_none=True), status=200)
 
 
 @ROUTES.post("/api/assets/seed")

@@ -1,6 +1,9 @@
+import logging
+
 import comfy.sd
 import comfy.model_sampling
 import comfy.latent_formats
+import comfy.ldm.modules.attention
 import nodes
 import torch
 import node_helpers
@@ -59,7 +62,7 @@ class ModelSamplingDiscrete:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
 
-    CATEGORY = "advanced/model"
+    CATEGORY = "model/patch"
 
     def patch(self, model, sampling, zsnr):
         m = model.clone()
@@ -97,7 +100,7 @@ class ModelSamplingStableCascade:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
 
-    CATEGORY = "advanced/model"
+    CATEGORY = "model/patch/stable cascade"
 
     def patch(self, model, shift):
         m = model.clone()
@@ -123,7 +126,7 @@ class ModelSamplingSD3:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
 
-    CATEGORY = "advanced/model"
+    CATEGORY = "model/patch/stable diffusion"
 
     def patch(self, model, shift, multiplier=1000):
         m = model.clone()
@@ -134,8 +137,11 @@ class ModelSamplingSD3:
         class ModelSamplingAdvanced(sampling_base, sampling_type):
             pass
 
+        original = m.get_model_object("model_sampling")
         model_sampling = ModelSamplingAdvanced(model.model.model_config)
         model_sampling.set_parameters(shift=shift, multiplier=multiplier)
+        if hasattr(original, "noise_scale"):
+            model_sampling.set_noise_scale(original.noise_scale)
         m.add_object_patch("model_sampling", model_sampling)
         return (m, )
 
@@ -147,6 +153,7 @@ class ModelSamplingAuraFlow(ModelSamplingSD3):
                               }}
 
     FUNCTION = "patch_aura"
+    CATEGORY = "model/patch"
 
     def patch_aura(self, model, shift):
         return self.patch(model, shift, multiplier=1.0)
@@ -164,7 +171,7 @@ class ModelSamplingFlux:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
 
-    CATEGORY = "advanced/model"
+    CATEGORY = "model/patch/flux"
 
     def patch(self, model, max_shift, base_shift, width, height):
         m = model.clone()
@@ -199,7 +206,7 @@ class ModelSamplingContinuousEDM:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
 
-    CATEGORY = "advanced/model"
+    CATEGORY = "model/patch"
 
     def patch(self, model, sampling, sigma_max, sigma_min):
         m = model.clone()
@@ -244,7 +251,7 @@ class ModelSamplingContinuousV:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
 
-    CATEGORY = "advanced/model"
+    CATEGORY = "model/patch"
 
     def patch(self, model, sampling, sigma_max, sigma_min):
         m = model.clone()
@@ -270,7 +277,7 @@ class RescaleCFG:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
 
-    CATEGORY = "advanced/model"
+    CATEGORY = "model/patch"
 
     def patch(self, model, multiplier):
         def rescale_cfg(args):
@@ -300,6 +307,29 @@ class RescaleCFG:
         m.set_model_sampler_cfg_function(rescale_cfg)
         return (m, )
 
+class ModelNoiseScale:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "model": ("MODEL",),
+                              "noise_scale": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 64.0, "step": 0.01,
+                                                       "tooltip": "Absolute training noise scale. For example HiDream-O1 base: 8.0, dev: 7.5."}),
+                              }}
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "patch"
+
+    CATEGORY = "model/patch"
+
+    def patch(self, model, noise_scale):
+        m = model.clone()
+        original = m.get_model_object("model_sampling")
+        ms = type(original)(m.model.model_config)
+        ms.set_parameters(shift=original.shift, multiplier=original.multiplier)
+        ms.set_noise_scale(noise_scale)
+        m.add_object_patch("model_sampling", ms)
+        return (m, )
+
+
 class ModelComputeDtype:
     SEARCH_ALIASES = ["model precision", "change dtype"]
     @classmethod
@@ -311,11 +341,44 @@ class ModelComputeDtype:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "patch"
 
-    CATEGORY = "advanced/debug/model"
+    CATEGORY = "advanced/debug"
 
     def patch(self, model, dtype):
         m = model.clone()
         m.set_model_compute_dtype(node_helpers.string_to_torch_dtype(dtype))
+        return (m, )
+
+
+class ModelAttentionBackend:
+    @classmethod
+    def INPUT_TYPES(s):
+        backends = ["pytorch attention"]
+        if comfy.ldm.modules.attention.COMFY_KITCHEN_INT8_ATTENTION_IS_AVAILABLE:
+            backends.append("comfy kitchen attention")
+        return {"required": {"model": ("MODEL",),
+                             "attention": (backends,),
+                             }}
+
+    @classmethod
+    def VALIDATE_INPUTS(s, attention):
+        return True
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "patch"
+
+    CATEGORY = "model/patch"
+
+    def patch(self, model, attention):
+        attention_name = {
+            "comfy kitchen attention": "comfy_kitchen_int8",
+            "pytorch attention": "pytorch",
+        }.get(attention)
+        attention_function = comfy.ldm.modules.attention.get_attention_function(attention_name, None)
+        if attention_function is None:
+            logging.warning("Attention backend '%s' is unavailable; using PyTorch attention.", attention)
+            attention_function = comfy.ldm.modules.attention.get_attention_function("pytorch")
+        m = model.clone()
+        m.set_model_optimized_attention(attention_function)
         return (m, )
 
 
@@ -327,6 +390,8 @@ NODE_CLASS_MAPPINGS = {
     "ModelSamplingSD3": ModelSamplingSD3,
     "ModelSamplingAuraFlow": ModelSamplingAuraFlow,
     "ModelSamplingFlux": ModelSamplingFlux,
+    "ModelNoiseScale": ModelNoiseScale,
     "RescaleCFG": RescaleCFG,
     "ModelComputeDtype": ModelComputeDtype,
+    "ModelAttentionBackend": ModelAttentionBackend,
 }
